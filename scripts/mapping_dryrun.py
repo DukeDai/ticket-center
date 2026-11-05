@@ -568,6 +568,14 @@ def main():
             f.write(render(data))
         print('POC 页面已生成：%s' % path)
 
+    # 不变量违规必须让命令失败，否则 `make check` 会带着红灯放行。
+    # 模型缺口（组合表达式表达不了）不算失败，那是已知待办，在报告 ④ 里单独列。
+    failed = data['counts']['invariant_failures']
+    if failed:
+        print()
+        print('演练失败：%d 条不变量违规。' % failed)
+        sys.exit(1)
+
 
 if __name__ == '__main__':
     sys.path.insert(0, os.path.join(ROOT, 'scripts'))

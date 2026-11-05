@@ -1231,27 +1231,58 @@ VALUES (7,'admission',7,0,'{"gate":"东方广场集合点","group_size":7,"prici
 
 -- -------------------------------------------------------------------------------------
 -- 16.12 序列对齐：种子数据用了显式 id，identity 序列必须同步推进
+--
+-- 以前这里是 20 行手写的 setval，只覆盖了变体那轮改动过的表。
+-- 结果 product / ticket_type / supplier_product / customer / cart / inventory_hold
+-- 等 19 张表的序列停在 1，而 max(id) 已经到十几 —— 应用第一次 INSERT 就撞主键。
+--
+-- 改成遍历 public schema 下所有 identity 序列，新增表不会再漏。
 -- -------------------------------------------------------------------------------------
-SELECT setval(pg_get_serial_sequence('product_axis','id'), (SELECT max(id) FROM product_axis));
-SELECT setval(pg_get_serial_sequence('product_session','id'), (SELECT max(id) FROM product_session));
-SELECT setval(pg_get_serial_sequence('supplier_session','id'), (SELECT max(id) FROM supplier_session));
-SELECT setval(pg_get_serial_sequence('channel_listing','id'), (SELECT max(id) FROM channel_listing));
-SELECT setval(pg_get_serial_sequence('sales_order','id'), (SELECT max(id) FROM sales_order));
-SELECT setval(pg_get_serial_sequence('sales_payment','id'), (SELECT max(id) FROM sales_payment));
-SELECT setval(pg_get_serial_sequence('product_axis_option','id'), (SELECT max(id) FROM product_axis_option));
-SELECT setval(pg_get_serial_sequence('product_variant','id'), (SELECT max(id) FROM product_variant));
-SELECT setval(pg_get_serial_sequence('supplier_variant','id'), (SELECT max(id) FROM supplier_variant));
-SELECT setval(pg_get_serial_sequence('supplier_variant_mapping','id'), (SELECT max(id) FROM supplier_variant_mapping));
-SELECT setval(pg_get_serial_sequence('product_variant_relation','id'), (SELECT max(id) FROM product_variant_relation));
-SELECT setval(pg_get_serial_sequence('checkout_requirement','id'), (SELECT max(id) FROM checkout_requirement));
-SELECT setval(pg_get_serial_sequence('sales_order_item','id'), (SELECT max(id) FROM sales_order_item));
-SELECT setval(pg_get_serial_sequence('booking','id'), (SELECT max(id) FROM booking));
-SELECT setval(pg_get_serial_sequence('booking_attempt','id'), (SELECT max(id) FROM booking_attempt));
-SELECT setval(pg_get_serial_sequence('voucher','id'), (SELECT max(id) FROM voucher));
-SELECT setval(pg_get_serial_sequence('voucher_entitlement','id'), (SELECT max(id) FROM voucher_entitlement));
-SELECT setval(pg_get_serial_sequence('product_highlight','id'), (SELECT max(id) FROM product_highlight));
-SELECT setval(pg_get_serial_sequence('product_inclusion','id'), (SELECT max(id) FROM product_inclusion));
-SELECT setval(pg_get_serial_sequence('product_note','id'), (SELECT max(id) FROM product_note));
+DO $$
+DECLARE
+  r     record;
+  mx    bigint;
+  got   bigint;
+  stale text := '';
+BEGIN
+  -- 用 pg_depend 找序列的归属，不走 pg_get_serial_sequence：
+  -- 那个函数在遇到没有目标列的表时会直接报错（pg_statistic 就会踩到）。
+  FOR r IN
+    SELECT s.relname AS seq,
+           c.relname AS tbl,
+           a.attname AS col
+    FROM pg_class s
+    JOIN pg_depend d
+      ON d.objid = s.oid
+     AND d.classid = 'pg_class'::regclass
+     AND d.deptype IN ('a', 'i')          -- a = serial 自增，i = identity 自增
+    JOIN pg_class c ON c.oid = d.refobjid
+    JOIN pg_attribute a
+      ON a.attrelid = c.oid
+     AND a.attnum = d.refobjsubid
+     AND NOT a.attisdropped
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'r'
+      AND s.relkind = 'S'
+  LOOP
+    EXECUTE format('SELECT COALESCE(max(%I),0) FROM %I', r.col, r.tbl) INTO mx;
+    IF mx = 0 THEN
+      -- 表是空的，序列归零到 1 且不消耗
+      EXECUTE format('SELECT setval(%L, 1, false)', r.seq);
+      CONTINUE;
+    END IF;
+    EXECUTE format('SELECT setval(%L, %s, true)', r.seq, mx);
+    EXECUTE format('SELECT last_value FROM %s', r.seq) INTO got;
+    IF got < mx THEN
+      stale := stale || r.tbl || ' ';
+    END IF;
+  END LOOP;
+
+  IF stale <> '' THEN
+    RAISE EXCEPTION '序列未对齐（seed 之后应用无法插入）：%', stale;
+  END IF;
+END $$;
 
 COMMIT;
 

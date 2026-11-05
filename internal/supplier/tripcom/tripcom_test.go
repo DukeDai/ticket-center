@@ -2,6 +2,7 @@ package tripcom
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"ticket-center/internal/mock"
 	"ticket-center/internal/store"
 	"ticket-center/internal/supplier"
+	"ticket-center/internal/testdb"
 	"ticket-center/internal/transport"
 )
 
@@ -190,15 +192,26 @@ func TestMissingICodeReportsUnconfirmed(t *testing.T) {
 }
 
 func TestArchiveRedactsCredentials(t *testing.T) {
-	if testing.Short() {
-		t.Skip("跳过：需要本地 PostgreSQL")
+	// 以前这里连的是开发机上的 ticket_center_mock —— 一台机器上没这个库就跳过，
+	// 有这个库但没 seed 就插入失败。改成一次性库，每次都是干净状态。
+	dbName := testdb.New(t, testdb.Options{Seed: true})
+	db := store.New(dbName)
+
+	// 归档要挂在真正的 trip_com 源下面（supplier_raw_payload.supplier_id 是外键）。
+	supplierID, err := db.Scalar("SELECT id FROM supplier WHERE code='trip_com';")
+	if err != nil {
+		t.Fatalf("查 supplier 失败：%v", err)
 	}
-	db := store.New("ticket_center_mock")
-	if _, err := db.Scalar("SELECT 1;"); err != nil {
-		t.Skipf("跳过：本地 PostgreSQL 不可用（%v）", err)
+	if supplierID == "" {
+		t.Fatal("种子数据里没有 trip_com 这个源")
 	}
-	a, srv := newAdapterAgainstMock(t)
-	archiver := store.NewArchiver(db, 1, true)
+	var sid int64
+	if _, err := fmt.Sscanf(supplierID, "%d", &sid); err != nil {
+		t.Fatalf("supplier id 不是整数：%q", supplierID)
+	}
+
+	a, _ := newAdapterAgainstMock(t)
+	archiver := store.NewArchiver(db, sid, true)
 	a.Archiver = archiver
 	if _, err := a.GetCategories(context.Background()); err != nil {
 		t.Fatalf("调用失败：%v", err)
@@ -216,7 +229,6 @@ func TestArchiveRedactsCredentials(t *testing.T) {
 			t.Fatalf("归档泄露凭证：%s", blob)
 		}
 	}
-	_ = srv
 }
 
 func containsSubstr(s, sub string) bool {

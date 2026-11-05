@@ -319,6 +319,56 @@ GROUP BY pricing_basis
 ORDER BY pricing_basis;
 
 
+\echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'
+-- 种子数据用了显式 id，identity 序列必须同步推进。
+-- 序列停在 max(id) 之前时，应用第一次 INSERT 就报 duplicate key —— 这是「设计正确但跑不起来」的典型。
+-- 判定：序列将要发出的下一个值必须大于该表当前 max(id)。
+DO $$
+DECLARE
+  v_bad  text := '';
+  v_seen int  := 0;
+  r      record;
+  v_max  bigint;
+  v_last bigint;
+  v_called boolean;
+BEGIN
+  FOR r IN
+    SELECT s.relname AS seq,
+           c.relname AS tbl,
+           a.attname AS col
+    FROM pg_class s
+    JOIN pg_depend d
+      ON d.objid = s.oid
+     AND d.classid = 'pg_class'::regclass
+     AND d.deptype IN ('a', 'i')
+    JOIN pg_class c ON c.oid = d.refobjid
+    JOIN pg_attribute a
+      ON a.attrelid = c.oid
+     AND a.attnum = d.refobjsubid
+     AND NOT a.attisdropped
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'r'
+      AND s.relkind = 'S'
+  LOOP
+    v_seen := v_seen + 1;
+    EXECUTE format('SELECT COALESCE(max(%I),0) FROM %I', r.col, r.tbl) INTO v_max;
+    EXECUTE format('SELECT last_value FROM %s', r.seq) INTO v_last;
+    EXECUTE format('SELECT is_called FROM %s', r.seq) INTO v_called;
+    -- is_called = true  → 下一个值是 last_value + 1
+    -- is_called = false → 下一个值就是 last_value
+    IF (v_called AND v_last < v_max) OR (NOT v_called AND v_last <= v_max) THEN
+      v_bad := v_bad || r.tbl || '(seq=' || r.seq || ') ';
+    END IF;
+  END LOOP;
+
+  IF v_bad <> '' THEN
+    RAISE EXCEPTION '序列未对齐，应用无法插入：%', v_bad;
+  END IF;
+  RAISE NOTICE '序列对齐检查：% 张表的 identity 序列均可正常发号', v_seen;
+END $$;
+
+
 \echo '════════════════════════ F. 汇总 ════════════════════════'
 DO $$
 DECLARE v_total int; v_failed int;

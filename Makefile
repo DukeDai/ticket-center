@@ -31,6 +31,11 @@ build:
 test:
 	$(GO) test ./... -timeout 120s
 
+# 门禁下的测试：数据库不可用算失败，不算跳过。
+# 「没有数据库所以全绿」是一道假绿，check 与 CI 必须走这个。
+test-strict:
+	TC_REQUIRE_DB=1 $(GO) test ./... -timeout 180s
+
 vet:
 	$(GO) vet ./...
 
@@ -38,7 +43,8 @@ fmt:
 	$(GO) fmt ./...
 
 # 提交前的完整自检
-check: vet test build mock dryrun
+# dbcheck 必须进 check：38 条不变量是门禁，不是「有空跑一下」的报告
+check: vet test-strict build mock dbcheck dryrun
 
 mock: build
 	./$(BIN) mock
@@ -54,6 +60,17 @@ dryrun:
 
 poc:
 	python3 scripts/mapping_dryrun.py --json scripts/poc/data.json --poc scripts/poc/index.html
+
+# 门禁：在一次性库里跑 schema → seed → verify.sql，任一步失败即非零退出
+# 不碰主库 ticket_center
+CIBASE ?= ticket_center_ci
+dbcheck:
+	@$(PSQL) -h $(PGHOST) -d postgres -c "DROP DATABASE IF EXISTS $(CIBASE);" \
+	                     -c "CREATE DATABASE $(CIBASE);"
+	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 -f db/schema.sql > /dev/null
+	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 -f db/seed.sql > /dev/null
+	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 -f db/verify.sql > /dev/null
+	@echo "门禁通过：$(CIBASE) 的 38 条不变量全绿"
 
 # 重建主库（会清库）并跑验收
 db:
