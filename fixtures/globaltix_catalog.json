@@ -1,0 +1,103 @@
+{
+  "_comment": "GlobalTix Supply API 侧的报文集合（依据 BookingMeta 帮助中心《GlobalTix 供应 API 对接指南》描述的结构）。catalog[] 每项是一个产品及其 SKU；mappingExpressions[] 是「我们的变体 ← GlobalTix SKU（可组合）」的映射表达式。",
+  "reseller": {
+    "_comment": "凭证占位：真实接入时 GlobalTix 发放 Reseller ID(x-agent ID) + Username + API Key，并做 IP 白名单",
+    "resellerId": "x-agent-XXXX",
+    "resellerName": "DEMO RESELLER",
+    "username": "demo_reseller",
+    "apiKey": "<redacted>"
+  },
+  "catalog": [
+    {
+      "productId": "80041201",
+      "productName": "环球影城 门票（成人）",
+      "categoryName": "景点门票",
+      "items": [
+        {
+          "skuId": "80041201-8004120101", "itemName": "门票 成人票",
+          "audience": "ADULT", "passType": "1d", "parks": ["studio_tour"],
+          "currency": "CNY", "salePrice": 535.00, "netPrice": 520.00,
+          "validityDays": 1, "stock": 20
+        },
+        {
+          "skuId": "80041201-8004120102", "itemName": "快速通行证 成人票",
+          "audience": "ADULT", "passType": "1d", "addon": true,
+          "currency": "CNY", "salePrice": 358.00, "netPrice": 349.00,
+          "validityDays": 1, "stock": 30
+        }
+      ]
+    },
+    {
+      "productId": "80041902",
+      "productName": "环球影城 门票（儿童）",
+      "categoryName": "景点门票",
+      "items": [
+        {
+          "skuId": "80041902-8004190201", "itemName": "门票 儿童票",
+          "audience": "CHILD", "passType": "1d", "parks": ["studio_tour"],
+          "currency": "CNY", "salePrice": 425.00, "netPrice": 410.00,
+          "validityDays": 1, "stock": 20
+        },
+        {
+          "skuId": "80041902-8004190202", "itemName": "快速通行证 儿童票",
+          "audience": "CHILD", "passType": "1d", "addon": true,
+          "currency": "CNY", "salePrice": 338.00, "netPrice": 328.00,
+          "validityDays": 1, "stock": 30
+        }
+      ]
+    },
+    {
+      "productId": "80051201",
+      "productName": "环球影城 园区通票",
+      "categoryName": "景点门票",
+      "items": [
+        {
+          "skuId": "80051201-8005120101", "itemName": "园区通票 成人票",
+          "audience": "ADULT", "passType": "1d", "parks": ["studio_tour", "snw"],
+          "currency": "CNY", "salePrice": 628.00, "netPrice": 612.00,
+          "validityDays": 1, "stock": 18
+        },
+        {
+          "skuId": "80051201-8005120102", "itemName": "园区通票 儿童票",
+          "audience": "CHILD", "passType": "1d", "parks": ["studio_tour", "snw"],
+          "currency": "CNY", "salePrice": 518.00, "netPrice": 502.00,
+          "validityDays": 1, "stock": 18
+        }
+      ]
+    },
+    {
+      "productId": "80062001",
+      "productName": "北京一日游 团队票",
+      "categoryName": "一日游",
+      "items": [
+        {
+          "skuId": "80062001-8006200101", "itemName": "标准行程 团队票",
+          "audience": "STANDARD", "passType": "1d", "groupMin": 6, "groupMax": 40,
+          "pricingType": "per_group",
+          "currency": "CNY", "salePrice": 1150.00, "netPrice": 1050.00,
+          "validityDays": 1, "stock": 40
+        }
+      ]
+    }
+  ],
+
+  "mappingExpressions": [
+    {
+      "ourVariantKey": "adult:1d:studio_only",
+      "mappingId": "80041201-8004120101"
+    },
+    {
+      "ourVariantKey": "child:1d:studio_only",
+      "mappingId": "80041902-8004190201"
+    },
+    {
+      "ourVariantKey": "adult:1d:studio_snw",
+      "mappingId": "80051201-8005120101"
+    },
+    {
+      "_comment": "大阪环球影城门票 + 快速券家庭套餐（2大1小）—— GlobalTix 官方示例的组合表达式",
+      "ourVariantKey": "adult:1d:studio_only:express",
+      "mappingId": "80041201-8004120101|2+80041201-8004120102|2+80041902-8004190201|1+80041902-8004190202|1"
+    }
+  ]
+}

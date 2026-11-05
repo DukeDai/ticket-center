@@ -1,0 +1,76 @@
+{
+  "_comment": "我们自己的规范商品目录（Canonical Catalog）。演练中源报文要映射到这里。变体键 = ticket_type.code + 该变体参与的各轴取值。",
+  "products": [
+    {
+      "product_code": "SKU-CN-USJ-BEIJING",
+      "title": "北京环球影城 门票",
+      "product_type": "ticket",
+      "city_code": "BJ",
+      "axes": [
+        { "code": "pass_type", "name": "票种", "options": [
+          { "code": "1d", "name": "一日票" },
+          { "code": "2d", "name": "双日票" }
+        ]},
+        { "code": "park_scope", "name": "园区范围", "options": [
+          { "code": "studio_only", "name": "工作室之旅（单园区）" },
+          { "code": "studio_snw", "name": "工作室之旅 + 超级任天堂世界" }
+        ]},
+        { "code": "addon_type", "name": "加购件", "options": [
+          { "code": "express", "name": "快速通行证" }
+        ]}
+      ],
+      "ticket_types": [
+        { "code": "adult", "name": "成人票", "age_rule": { "min_age": 12 } },
+        { "code": "child", "name": "儿童票", "age_rule": { "min_age": 4, "max_age": 11 } },
+        { "code": "senior", "name": "老年票", "age_rule": { "min_age": 65 } }
+      ],
+      "variants": [
+        { "key": "adult:1d:studio_only",         "title": "成人票 · 一日 · 工作室之旅",   "ticket_type": "adult",  "axes": { "pass_type": "1d", "park_scope": "studio_only" } },
+        { "key": "child:1d:studio_only",         "title": "儿童票 · 一日 · 工作室之旅",   "ticket_type": "child",  "axes": { "pass_type": "1d", "park_scope": "studio_only" } },
+        { "key": "senior:1d:studio_only",        "title": "老年票 · 一日 · 工作室之旅",   "ticket_type": "senior", "axes": { "pass_type": "1d", "park_scope": "studio_only" } },
+        { "key": "adult:1d:studio_snw",          "title": "成人票 · 一日 · 园区通票",     "ticket_type": "adult",  "axes": { "pass_type": "1d", "park_scope": "studio_snw" } },
+        { "key": "child:1d:studio_snw",          "title": "儿童票 · 一日 · 园区通票",     "ticket_type": "child",  "axes": { "pass_type": "1d", "park_scope": "studio_snw" } },
+        { "key": "adult:2d:studio_only",         "title": "成人票 · 双日 · 工作室之旅",   "ticket_type": "adult",  "axes": { "pass_type": "2d", "park_scope": "studio_only" } },
+        { "key": "child:2d:studio_only",         "title": "儿童票 · 双日 · 工作室之旅",   "ticket_type": "child",  "axes": { "pass_type": "2d", "park_scope": "studio_only" } },
+        { "key": "adult:1d:studio_only:express", "title": "成人票+快速通行证 · 一日",    "ticket_type": "adult",  "axes": { "pass_type": "1d", "park_scope": "studio_only", "addon_type": "express" },
+          "_comment": "家庭套餐：门票 + 快速通行证 —— 当前模型只能拆成两条明细，源侧却是一个 SKU" }
+      ]
+    },
+    {
+      "product_code": "SKU-CN-USJ-EXPRESS",
+      "title": "北京环球影城 快速通行证",
+      "product_type": "ticket",
+      "city_code": "BJ",
+      "axes": [
+        { "code": "addon_type", "name": "加购件", "options": [
+          { "code": "express", "name": "快速通行证" }
+        ]}
+      ],
+      "ticket_types": [
+        { "code": "adult", "name": "成人票", "age_rule": { "min_age": 12 } },
+        { "code": "child", "name": "儿童票", "age_rule": { "min_age": 4, "max_age": 11 } }
+      ],
+      "variants": [
+        { "key": "adult:express", "title": "快速通行证 · 成人", "ticket_type": "adult", "axes": { "addon_type": "express" } },
+        { "key": "child:express", "title": "快速通行证 · 儿童", "ticket_type": "child", "axes": { "addon_type": "express" } }
+      ]
+    },
+    {
+      "product_code": "SKU-CN-BJ-DAYTOUR",
+      "title": "北京一日游 · 团队票",
+      "product_type": "package",
+      "city_code": "BJ",
+      "axes": [
+        { "code": "pass_type", "name": "行程天数", "options": [
+          { "code": "1d", "name": "一日行程" }
+        ]}
+      ],
+      "ticket_types": [
+        { "code": "standard", "name": "标准票（不区分人群）", "age_rule": { "min_age": 0 } }
+      ],
+      "variants": [
+        { "key": "standard:1d", "title": "一日游 · 团队票（按团报价）", "ticket_type": "standard", "axes": { "pass_type": "1d" } }
+      ]
+    }
+  ]
+}

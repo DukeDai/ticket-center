@@ -1,0 +1,125 @@
+{
+  "_comment": "映射规则配置：演练脚本完全由本文件驱动，代码里不出现 if (supplier == 'xxx') 这类源分支。新接一个源 = 在这里加一段配置。",
+  "base_date": "2026-11-16",
+  "sources": {
+    "trip_com": {
+      "supplier_code": "trip_com",
+      "supplier_name": "Trip.com",
+      "currency": "CNY",
+      "default_date": "2026-11-16",
+      "fixture": "trip_com_catalog.json",
+      "documents": {
+        "catalog_path": "catalog",
+        "prices_path": "prices"
+      },
+      "product": {
+        "id_path": "productID",
+        "name_path": "name"
+      },
+      "packages": {
+        "path": "packageList",
+        "id_path": "packageID",
+        "name_path": "name",
+        "axes": [
+          {
+            "axis_code": "pass_type",
+            "value_path": "name",
+            "value_map": {
+              "一日票 · 单园区": "1d",
+              "一日票 · 园区通票": "1d",
+              "双日票 · 单园区": "2d",
+              "标准行程 · 按团报价": "1d"
+            }
+          },
+          {
+            "axis_code": "park_scope",
+            "value_path": "name",
+            "value_map": {
+              "一日票 · 单园区": "studio_only",
+              "双日票 · 单园区": "studio_only",
+              "一日票 · 园区通票": "studio_snw",
+              "标准行程 · 按团报价": "studio_only"
+            }
+          },
+          {
+            "_comment": "快速通行证在源侧是独立 product/package，靠 package 名识别它是加购件",
+            "axis_code": "addon_type",
+            "value_path": "name",
+            "value_map": {
+              "快速通行证（不限次）": "express"
+            }
+          }
+        ],
+        "resources": {
+          "path": "resourceList",
+          "id_path": "resourceID",
+          "name_path": "name",
+          "audience_path": "bandCode",
+          "audience_map": { "ADULT": "adult", "CHILD": "child", "SENIOR": "senior", "STANDARD": "standard" },
+          "flags": {
+            "is_price_locked": { "path": "isPrivatePrice", "equals": true }
+          }
+        }
+      }
+    },
+
+    "globaltix": {
+      "supplier_code": "globaltix",
+      "supplier_name": "GlobalTix",
+      "currency": "CNY",
+      "default_date": "2026-11-16",
+      "fixture": "globaltix_catalog.json",
+      "documents": {
+        "catalog_path": "catalog"
+      },
+      "products": {
+        "id_path": "productId",
+        "name_path": "productName"
+      },
+      "skus": {
+        "path": "items",
+        "id_path": "skuId",
+        "name_path": "itemName",
+        "audience_path": "audience",
+        "audience_map": { "ADULT": "adult", "CHILD": "child", "SENIOR": "senior", "STANDARD": "standard" },
+        "axes": [
+          {
+            "axis_code": "pass_type",
+            "value_path": "passType",
+            "value_map": { "1d": "1d", "2d": "2d" }
+          },
+          {
+            "_comment": "GlobalTix 用园区 ID 集合表达覆盖范围；我们把它收敛成 park_scope 这一个轴取值",
+            "axis_code": "park_scope",
+            "value_path": "parks",
+            "value_map": {
+              "studio_tour": "studio_only",
+              "studio_tour,snw": "studio_snw"
+            }
+          },
+          {
+            "_comment": "addon=true 表示这是加购件（快速通行证），不含园区门票本身",
+            "axis_code": "addon_type",
+            "value_path": "addon",
+            "value_map": { "true": "express" }
+          }
+        ],
+        "flags": {
+          "is_price_locked": { "path": "isPrivatePrice", "equals": true }
+        }
+      },
+      "mapping_expression": {
+        "path": "mappingExpressions",
+        "our_variant_path": "ourVariantKey",
+        "mapping_id_path": "mappingId",
+        "_comment": "GlobalTix 用组合表达式表达「我们的 SKU ← 多个源 SKU」；单个 supplier_variant 无法表达组合，这是已知的模型缺口"
+      }
+    }
+  },
+
+  "pricing": {
+    "_comment": "演练里的对客售价规则：成本_plus 10%；源侧价格保护时锁定为源挂牌价",
+    "markup_percent": 10.0,
+    "price_locked_uses_source_list_price": true
+  }
+}

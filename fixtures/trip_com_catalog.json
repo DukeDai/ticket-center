@@ -1,0 +1,428 @@
+{
+  "_comment": "Trip.com 分销侧报文集合。catalog[] 每项是一份 productDetail 响应；prices[] 每项是一份 priceCalendar 响应 —— 其报价按真实 API 形状放在 resource.calendarDetailList[] 里（见《门票活动全球分销接口文档》V2.0.25 的 priceCalendar.CalendarDetail）。凭证缺失时用本文件走通映射逻辑。",
+  "catalog": [
+    {
+      "success": true,
+      "errcode": "",
+      "errmsg": "",
+      "data": {
+        "productID": 21081935,
+        "business": "ACTIVITY",
+        "category": {
+          "categoryID": 3,
+          "categoryName": "门票"
+        },
+        "name": "北京环球影城 门票",
+        "duration": 600,
+        "locale": "zh-CN",
+        "currency": "CNY",
+        "packageList": [
+          {
+            "packageID": 810001,
+            "name": "一日票 · 单园区",
+            "description": "含工作室之旅",
+            "advanceBooking": {
+              "days": 0,
+              "time": "23:59"
+            },
+            "resourceList": [
+              {
+                "resourceID": 900001,
+                "bandID": 1,
+                "bandCode": "ADULT",
+                "name": "1日票 成人（工作室之旅）",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 1,
+                "maxQuantity": 20,
+                "isPrivatePrice": true
+              },
+              {
+                "resourceID": 900002,
+                "bandID": 2,
+                "bandCode": "CHILD",
+                "name": "1日票 儿童（工作室之旅）",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 1,
+                "maxQuantity": 20
+              },
+              {
+                "resourceID": 900003,
+                "bandID": 3,
+                "bandCode": "SENIOR",
+                "name": "1日票 老年（工作室之旅）",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 1,
+                "maxQuantity": 15
+              }
+            ]
+          },
+          {
+            "packageID": 810002,
+            "name": "一日票 · 园区通票",
+            "description": "工作室之旅 + 超级任天堂世界",
+            "resourceList": [
+              {
+                "resourceID": 900004,
+                "bandID": 1,
+                "bandCode": "ADULT",
+                "name": "1日票 成人 园区通票",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 1,
+                "maxQuantity": 20,
+                "isPrivatePrice": true
+              },
+              {
+                "resourceID": 900005,
+                "bandID": 2,
+                "bandCode": "CHILD",
+                "name": "1日票 儿童 园区通票",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 1,
+                "maxQuantity": 20
+              }
+            ]
+          },
+          {
+            "packageID": 810003,
+            "name": "双日票 · 单园区",
+            "description": "两日内有效，含工作室之旅",
+            "resourceList": [
+              {
+                "resourceID": 900006,
+                "bandID": 1,
+                "bandCode": "ADULT",
+                "name": "双日票 成人（工作室之旅）",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 1,
+                "maxQuantity": 12
+              },
+              {
+                "resourceID": 900007,
+                "bandID": 2,
+                "bandCode": "CHILD",
+                "name": "双日票 儿童（工作室之旅）",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 1,
+                "maxQuantity": 12
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "success": true,
+      "errcode": "",
+      "errmsg": "",
+      "data": {
+        "productID": 21082001,
+        "business": "TOUR",
+        "category": {
+          "categoryID": 12,
+          "categoryName": "一日游"
+        },
+        "name": "北京一日游 · 团队票",
+        "duration": 480,
+        "locale": "zh-CN",
+        "currency": "CNY",
+        "packageList": [
+          {
+            "packageID": 810101,
+            "name": "标准行程 · 按团报价",
+            "description": "含中文导览与车船接送，整团计价",
+            "priceSettingType": 4,
+            "groupMinLimit": 6,
+            "groupAdditionalLimit": 10,
+            "groupMaxLimit": 40,
+            "resourceList": [
+              {
+                "resourceID": 900101,
+                "bandID": 9,
+                "bandCode": "STANDARD",
+                "name": "标准票（不区分人群）",
+                "unitQuantity": 1,
+                "saleAloneType": 1,
+                "minQuantity": 6,
+                "maxQuantity": 40
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "success": true,
+      "errcode": "",
+      "errmsg": "",
+      "data": {
+        "productID": 21081936,
+        "business": "ACTIVITY",
+        "category": {
+          "categoryID": 3,
+          "categoryName": "门票"
+        },
+        "name": "北京环球影城 快速通行证",
+        "duration": 600,
+        "locale": "zh-CN",
+        "currency": "CNY",
+        "packageList": [
+          {
+            "packageID": 810004,
+            "name": "快速通行证（不限次）",
+            "description": "园区内快速通行权益，作为门票加购件",
+            "resourceList": [
+              {
+                "resourceID": 900008,
+                "bandID": 1,
+                "bandCode": "ADULT",
+                "name": "快速通行证 成人",
+                "unitQuantity": 1,
+                "saleAloneType": 2,
+                "minQuantity": 1,
+                "maxQuantity": 30
+              },
+              {
+                "resourceID": 900009,
+                "bandID": 2,
+                "bandCode": "CHILD",
+                "name": "快速通行证 儿童",
+                "unitQuantity": 1,
+                "saleAloneType": 2,
+                "minQuantity": 1,
+                "maxQuantity": 30
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "prices": [
+    {
+      "success": true,
+      "errcode": "",
+      "errmsg": "",
+      "data": {
+        "productID": 21081935,
+        "name": "北京环球影城 门票",
+        "saleAvailable": true,
+        "locale": "zh-CN",
+        "packageList": [
+          {
+            "packageID": 810001,
+            "name": "一日票 · 单园区",
+            "resourceList": [
+              {
+                "resourceID": 900001,
+                "bandCode": "ADULT",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 545.0,
+                    "salePrice": 558.0,
+                    "currency": "CNY",
+                    "stock": 20
+                  }
+                ]
+              },
+              {
+                "resourceID": 900002,
+                "bandCode": "CHILD",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 436.0,
+                    "salePrice": 448.0,
+                    "currency": "CNY",
+                    "stock": 20
+                  }
+                ]
+              },
+              {
+                "resourceID": 900003,
+                "bandCode": "SENIOR",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 486.0,
+                    "salePrice": 498.0,
+                    "currency": "CNY",
+                    "stock": 15
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageID": 810002,
+            "name": "一日票 · 园区通票",
+            "resourceList": [
+              {
+                "resourceID": 900004,
+                "bandCode": "ADULT",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 642.0,
+                    "salePrice": 658.0,
+                    "currency": "CNY",
+                    "stock": 20
+                  }
+                ]
+              },
+              {
+                "resourceID": 900005,
+                "bandCode": "CHILD",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 532.0,
+                    "salePrice": 548.0,
+                    "currency": "CNY",
+                    "stock": 20
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "packageID": 810003,
+            "name": "双日票 · 单园区",
+            "resourceList": [
+              {
+                "resourceID": 900006,
+                "bandCode": "ADULT",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 975.0,
+                    "salePrice": 998.0,
+                    "currency": "CNY",
+                    "stock": 12
+                  }
+                ]
+              },
+              {
+                "resourceID": 900007,
+                "bandCode": "CHILD",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 766.0,
+                    "salePrice": 788.0,
+                    "currency": "CNY",
+                    "stock": 12
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "success": true,
+      "errcode": "",
+      "errmsg": "",
+      "data": {
+        "productID": 21082001,
+        "name": "北京一日游 · 团队票",
+        "saleAvailable": true,
+        "locale": "zh-CN",
+        "packageList": [
+          {
+            "packageID": 810101,
+            "name": "标准行程 · 按团报价",
+            "resourceList": [
+              {
+                "resourceID": 900101,
+                "bandCode": "STANDARD",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-17",
+                    "netPrice": 1100.0,
+                    "salePrice": 1200.0,
+                    "currency": "CNY",
+                    "stock": 40
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "success": true,
+      "errcode": "",
+      "errmsg": "",
+      "data": {
+        "productID": 21081936,
+        "name": "北京环球影城 快速通行证",
+        "saleAvailable": true,
+        "locale": "zh-CN",
+        "packageList": [
+          {
+            "packageID": 810004,
+            "name": "快速通行证（不限次）",
+            "resourceList": [
+              {
+                "resourceID": 900008,
+                "bandCode": "ADULT",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 349.0,
+                    "salePrice": 358.0,
+                    "currency": "CNY",
+                    "stock": 30
+                  }
+                ]
+              },
+              {
+                "resourceID": 900009,
+                "bandCode": "CHILD",
+                "currency": "CNY",
+                "status": "available",
+                "calendarDetailList": [
+                  {
+                    "date": "2026-11-16",
+                    "netPrice": 328.0,
+                    "salePrice": 338.0,
+                    "currency": "CNY",
+                    "stock": 30
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

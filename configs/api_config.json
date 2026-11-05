@@ -1,0 +1,245 @@
+{
+  "_comment": "适配器传输层配置：端点、接口编码（icode）、凭证口径、错误码映射、探针请求。源差异一律进本文件，代码里不出现 if (supplier == 'xxx')。新增一个源 = 在这里加一段。",
+  "_trip_com_source": "《门票活动全球分销接口文档》V2.0.25（2026-10-28）OpenAPI 规格：https://open.trip.com/apiplatform/openapi/ttd_dist/openapi_zhcn/CghFB4bb.do",
+  "sources": {
+    "trip_com": {
+      "status": "confirmed",
+      "confirmed": true,
+      "protocol": "rest-json",
+      "protocol_note": "POST + URL query 传参（aid/sid/icode/uuid/token），body 为 JSON；信封 {success, errcode, errmsg, data}",
+      "direction": "分销侧（我们从携程拿货）—— 不是供应商侧那套 AES/MD5",
+      "endpoints": {
+        "prod": {
+          "authorize": "https://openserviceauth.ctrip.com/openserviceauth/authorize.ashx",
+          "refresh": "https://openserviceauth.ctrip.com/openserviceauth/refresh.ashx",
+          "service": "https://sopenservice.ctrip.com/openservice/serviceproxy.ashx"
+        },
+        "sandbox": {
+          "authorize": "http://openservice.open.uat.ctripqa.com/openserviceauth/authorize.ashx",
+          "refresh": "https://openservice.open.uat.ctripqa.com/openserviceauth/refresh.ashx",
+          "service": "https://openservice.open.uat.ctripqa.com/openservice/serviceproxy.ashx"
+        }
+      },
+      "credentials": {
+        "aid": { "env": "TRIPCOM_AID", "auth_config_key": "aid", "required": true, "desc": "联盟ID" },
+        "sid": { "env": "TRIPCOM_SID", "auth_config_key": "sid", "required": true, "desc": "站点ID（Ctrip站/Trip站不同）" },
+        "key": { "env": "TRIPCOM_KEY", "auth_config_key": "key", "required": true, "desc": "安全码" }
+      },
+      "token": {
+        "access_field": "Access_Token",
+        "refresh_field": "Refresh_Token",
+        "expires_field": "Expires_In",
+        "expires_unit": "second",
+        "skew_seconds": 30,
+        "err_code_field": "ErrCode",
+        "err_msg_field": "ErrMsg"
+      },
+      "interfaces": {
+        "listProducts": {
+          "section": "3.1", "summary": "获取产品列表", "icode_prod": "c694e33296a24fb7a40a41cbacb0df0b", "icode_sandbox": "17e414dba020473db7bc5c108f1c6826"
+        },
+        "getProduct": {
+          "section": "3.2", "summary": "获取产品详情", "icode_prod": "5dd68829a1844fed8ecb659e7ebfe2ad", "icode_sandbox": "f8c5e03752644552a8546ae445069c59"
+        },
+        "getPriceCalendar": {
+          "section": "3.3", "summary": "获取产品价格日历", "icode_prod": "db745abbb8004ba3a856fbd7ac8fdd57", "icode_sandbox": "2543fc84edf54c7186f6ae9ec8ee70d3"
+        },
+        "getPoi": {
+          "section": "3.4", "summary": "获取POI信息", "icode_prod": "9fce9afbbc8a4891b2640670095b7bcb", "icode_sandbox": "1e44c223968e4382959d9bfdac25fc36"
+        },
+        "listAllProducts": {
+          "section": "3.5", "summary": "产品全量接口（增量游标 lastMaxId）", "icode_prod": null, "icode_sandbox": "816a39440838419f9b305d52daf2d90f",
+          "note": "规格只给了沙箱 ICODE，生产 ICODE 待商务确认"
+        },
+        "listAllPois": {
+          "section": "3.6", "summary": "POI全量接口（增量游标 lastMaxId）", "icode_prod": null, "icode_sandbox": "50611eab45504f108af2109da1ff0777",
+          "note": "规格只给了沙箱 ICODE，生产 ICODE 待商务确认"
+        },
+        "getIdByQueryId": {
+          "section": "3.7", "summary": "id查询接口", "icode_prod": null, "icode_sandbox": null,
+          "note": "规格未给出 ICODE，待商务确认"
+        },
+        "bookingVerify": {
+          "section": "4.1", "summary": "可订检查", "icode_prod": "f194240bbcc1409e9f42baef4714546f", "icode_sandbox": "f840b9956a1a42388557e25e9c3094a0"
+        },
+        "bookingRequiredInfo": {
+          "section": "4.2", "summary": "获取下单填写信息", "icode_prod": "53691184a01e417eab6affc663810b3a", "icode_sandbox": "b2cce56b68874e88aaa0a1ef82c635fe"
+        },
+        "createBooking": {
+          "section": "4.3", "summary": "创建订单", "icode_prod": "17fdafcbad674fc9a44c8d93b8d4aa74", "icode_sandbox": "a0fc8c6cf3524a31814f700490071f91",
+          "idempotency_field": "distributorOrderID"
+        },
+        "getBookingStatus": {
+          "section": "4.4", "summary": "获取订单状态", "icode_prod": "09660798b35a4945afccb66b178d1528", "icode_sandbox": "1f8b6e710fbf4e9aa6a3fa5953050ce9"
+        },
+        "getBookingDetail": {
+          "section": "4.5", "summary": "获取订单详情", "icode_prod": "47ac6ba494ad4636b0f5b618b6232028", "icode_sandbox": "24c5daf9151a43b681632e6e3f173299"
+        },
+        "cancelBooking": {
+          "section": "4.6", "summary": "订单退订", "icode_prod": "0d842e7431414537afec851c1d7a28b1", "icode_sandbox": "4da5ce5a79304ab382ba8dfdd6b706a0"
+        },
+        "getVoucher": {
+          "section": "4.7", "summary": "凭证信息", "icode_prod": "35c508847f154061b91edc235b73df97", "icode_sandbox": "b307b723ce774eafa950556186016ee0"
+        },
+        "getLogistics": {
+          "section": "4.8", "summary": "物流查询", "icode_prod": "8d77b9fdb765404cb3e80aa488c7c210", "icode_sandbox": "0fb75b1f5cb64678acc970b2ba1c7f94"
+        },
+        "getRefundDetail": {
+          "section": "4.9", "summary": "退订明细查询", "icode_prod": "e0d6cf9d21e342e48eff828ae3f47e01", "icode_sandbox": "8cb299e1d4ac4ff8ac3b6a7cb2b74fdb"
+        },
+        "cancelVerify": {
+          "section": "4.10", "summary": "可退检查接口", "icode_prod": "8f92fd203bba49b08831afdecd3cfa74", "icode_sandbox": "228bcc051868424a99ea925091dcbdf4"
+        },
+        "getCategories": {
+          "section": "5.1", "summary": "获取品类", "icode_prod": "36267a4ab9394085a29fd7363ab3d058", "icode_sandbox": "fdc2b31b43b2460f943a4dec817e0f65"
+        },
+        "getLocations": {
+          "section": "5.2", "summary": "获取位置", "icode_prod": "70480cbf76044bca88778a4c775b1ba6", "icode_sandbox": "63bc9b16f83e42d4aefa5200c1ee3326"
+        },
+        "getCurrencies": {
+          "section": "5.3", "summary": "获取货币（一个分销账户仅支持一种币种）", "icode_prod": "a5110ee41e1d450c97e9a138195665e5", "icode_sandbox": "a3bb8914625c45889667abdb017dc3bc"
+        },
+        "getLocales": {
+          "section": "5.4", "summary": "获取语言", "icode_prod": "c67bc7bc71fc4b5e887da72acc782049", "icode_sandbox": "ad24bb7be681419295af1803dea3cc62"
+        }
+      },
+      "probes": {
+        "_comment": "探针请求体：连通性测试用最小可接受请求。productID 一律由目录层现取，不写死。",
+        "listProducts": {
+          "locale": "zh-CN", "currency": "CNY", "categoryIDList": [3],
+          "destination": { "locationID": 1, "locationType": "CITY" },
+          "site": { "locationID": 1, "locationType": "CITY" },
+          "sortOrder": "ID_A", "pageIndex": 1, "pageSize": 10
+        },
+        "getProduct": { "locale": "zh-CN", "currency": "CNY", "productIDList": [] },
+        "getPriceCalendar": { "locale": "zh-CN", "currency": "CNY", "productID": null, "startDate": null, "endDate": null },
+        "getPoi": { "locale": "zh-CN", "poiIdList": [] },
+        "getCategories": { "locale": "zh-CN" },
+        "getLocations": { "locale": "zh-CN", "pageIndex": 1, "pageSize": 10 },
+        "getCurrencies": {},
+        "getLocales": {}
+      },
+      "error_codes": {
+        "S0001": "retriable", "S0002": "retriable",
+        "V0001": "fatal", "V0002": "fatal", "V0003": "auth", "V0004": "fatal", "V0005": "fatal",
+        "1004": "auth",
+        "B0001": "fatal", "B0002": "fatal", "B0003": "fatal", "B0004": "fatal", "B0005": "fatal",
+        "B0006": "fatal", "B0007": "fatal", "B0008": "fatal", "B0009": "fatal", "B0010": "fatal",
+        "B0011": "fatal", "B0012": "fatal", "B0013": "fatal", "B0014": "fatal", "B0015": "fatal",
+        "B0016": "fatal", "B0032": "fatal", "B0039": "fatal", "B0040": "fatal", "B0042": "fatal",
+        "B0048": "fatal"
+      },
+      "error_labels": {
+        "S0001": "系统错误", "S0002": "系统超时",
+        "V0001": "参数不完整", "V0002": "参数数据类型检验失败", "V0003": "权限不足",
+        "V0004": "无效的货币", "V0005": "无效的语言",
+        "B0001": "订单下单失败", "B0002": "订单退订失败", "B0003": "订单资料填写错误",
+        "B0004": "无效的资源价格", "B0005": "库存不足", "B0006": "产品限购",
+        "B0007": "不符合最大购买数量限制", "B0008": "资源不可以单独预订", "B0009": "无效的订单号",
+        "B0010": "重复的创建订单请求", "B0011": "预订总价格与订单资源总价不匹配", "B0012": "价格校验失败",
+        "B0013": "订购的ResourceID无效", "B0014": "Question不匹配", "B0015": "重复的退订请求",
+        "B0016": "产品不可预订", "B0032": "可选项只可单独售卖", "B0039": "超出单订单最大购买份数",
+        "B0040": "超出最大购买订单数", "B0042": "多资源使用日期不一致", "B0048": "支付失败"
+      },
+      "idempotent_codes": ["B0010"],
+      "idempotent_note": "B0010 = 幂等命中（重复下单），应改查已有订单而不是当失败；B0015（重复退订）同理但仍按 fatal 归档，待商务确认口径",
+      "auth_error_codes": {
+        "1001": "错误的 aid 或 sid", "1002": "无权访问该服务", "1003": "Token 无效",
+        "1004": "Token 已过期（可刷新后重试）", "1005": "Refresh Token 无效或已过期", "1006": "请求不合法"
+      },
+      "refreshable_codes": ["1004", "V0003"]
+    },
+
+    "globaltix": {
+      "status": "pending_confirmation",
+      "confirmed": false,
+      "protocol": "rest-json（端点与请求体无公开文档）",
+      "protocol_note": "GlobalTix Supply API = 分销商从 GlobalTix 采购（我们是分销商）。反向供货给 GlobalTix 是另一套流程，且 mapping 由 GlobalTix 侧完成。",
+      "confirmed_facts": {
+        "credentials": "Reseller ID (x-agent ID) + Reseller Name + Username + API Key；并需把出站 IP 加白名单",
+        "sku_mapping_expression": "SKU / SKU|2 / A|2+B|1（一个可售单元可由多个源 SKU 组合）",
+        "pricing": "Settlement Cost Price ≠ Recommended Selling Price；价格受限商品须遵守销售政策",
+        "stock": "SKU 可设 Unlimited 或按日历库存，下单以实时库存为准"
+      },
+      "endpoints": {
+        "_comment": "端点与请求体无公开文档 —— 禁止编造。拿到商务文档后把下面的 null 填上即可启用。",
+        "prod": { "catalog": null, "prices": null, "booking": null, "cancel": null },
+        "sandbox": { "catalog": null, "prices": null, "booking": null, "cancel": null }
+      },
+      "auth": {
+        "scheme": "待确认（预计 HTTP Basic：username + api_key；也可能是 query token）",
+        "confirmed": false
+      },
+      "credentials": {
+        "reseller_id": { "env": "GLOBALTIX_RESELLER_ID", "auth_config_key": "reseller_id", "required": true, "desc": "Reseller ID (x-agent ID)" },
+        "reseller_name": { "env": "GLOBALTIX_RESELLER_NAME", "auth_config_key": "reseller_name", "required": true, "desc": "Reseller Name" },
+        "username": { "env": "GLOBALTIX_USERNAME", "auth_config_key": "username", "required": true, "desc": "Username" },
+        "api_key": { "env": "GLOBALTIX_API_KEY", "auth_config_key": "api_key", "required": true, "desc": "API Key" }
+      },
+      "interfaces": {},
+      "need_from_business": [
+        "Supply API 的 base URL 与各接口路径（catalog / price / booking / cancel）",
+        "请求体字段名与认证头的确切形态",
+        "SKU 列表与 mappingId 的查询接口（组合表达式的来源）"
+      ]
+    },
+
+    "ingresso": {
+      "status": "pending_confirmation",
+      "confirmed": false,
+      "protocol": "xml（OCTO 标准）",
+      "protocol_note": "文档不公开：需 contact commercial@ingresso.co.uk 索取 URL + 密码，前提是 mutual NDA + ticketing agreement；两种商务模式 Direct / Ingresso Managed。",
+      "endpoints": { "prod": { "catalog": null, "booking": null }, "sandbox": { "catalog": null, "booking": null } },
+      "credentials": {
+        "url": { "env": "INGRESSO_URL", "auth_config_key": "url", "required": true, "desc": "接口 URL（商务提供）" },
+        "username": { "env": "INGRESSO_USERNAME", "auth_config_key": "username", "required": true, "desc": "账号" },
+        "password": { "env": "INGRESSO_PASSWORD", "auth_config_key": "password", "required": true, "desc": "密码" }
+      }
+    },
+
+    "goodfellows_jtb": {
+      "status": "pending_confirmation",
+      "confirmed": false,
+      "protocol": "xml（OTA XML 2010A）",
+      "protocol_note": "hostConnect = 把 JTB 的库存/价格接进自有系统；webConnect 是给旅行社用的 B2B 网站，不是我们的接入方式。需商务提供技术规格与权限凭据。",
+      "endpoints": { "prod": { "catalog": null, "booking": null }, "sandbox": { "catalog": null, "booking": null } },
+      "credentials": {
+        "username": { "env": "JTB_USERNAME", "auth_config_key": "username", "required": true, "desc": "账号" },
+        "password": { "env": "JTB_PASSWORD", "auth_config_key": "password", "required": true, "desc": "密码" }
+      }
+    },
+
+    "zowoyoo": {
+      "status": "pending_confirmation",
+      "confirmed": false,
+      "protocol": "rest-json",
+      "protocol_note": "需申请生产 API Key（注册 3-5 工作日，开发 4-8 周）；分层聚合型，归一化只做它这一层。",
+      "endpoints": { "prod": { "catalog": null, "booking": null }, "sandbox": { "catalog": null, "booking": null } },
+      "credentials": {
+        "api_key": { "env": "ZOWOYOO_API_KEY", "auth_config_key": "api_key", "required": true, "desc": "API Key" }
+      }
+    },
+
+    "fonticket": {
+      "status": "pending_confirmation",
+      "confirmed": false,
+      "protocol": "未找到公开 API 文档",
+      "protocol_note": "丰趣科技产品线 FonTour/FonTicket/FonPay/FonBoard，宣称 open API + 分润，但无公开文档，需主动索取。",
+      "endpoints": { "prod": { "catalog": null, "booking": null }, "sandbox": { "catalog": null, "booking": null } },
+      "credentials": {
+        "api_key": { "env": "FONTICKET_API_KEY", "auth_config_key": "api_key", "required": true, "desc": "API Key" }
+      }
+    },
+
+    "piaofutong": {
+      "status": "pending_confirmation",
+      "confirmed": false,
+      "protocol": "未找到公开 API 文档",
+      "protocol_note": "票付通（福建）：2014 成立、1万+景区云票务、宣称百万级并发、有优待人群证件实时核验；无公开文档，需主动索取。",
+      "endpoints": { "prod": { "catalog": null, "booking": null }, "sandbox": { "catalog": null, "booking": null } },
+      "credentials": {
+        "api_key": { "env": "PIAOFUTONG_API_KEY", "auth_config_key": "api_key", "required": true, "desc": "API Key" }
+      }
+    }
+  }
+}
