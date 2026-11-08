@@ -5,11 +5,17 @@
 目的：在拿不到 aid/sid/key、Reseller ID/API Key 之前，先把「源报文 → 归一化 → 变体映射 → 路由」
 这条链路用**真实报文结构**跑通一遍，并暴露当前模型表达不了的源侧结构。
 
-分工（对应 AGENTS.md 硬约束 4 与 14）：
+分工（对应 AGENTS.md 硬约束 4、14 与「一份事实只写一处」）：
   - **归一化在 Go 侧**（internal/normalize，唯一实现）。本脚本通过
     `tc-connect normalize` 消费它的输出，不自己再写一份归一化；
-  - 本脚本只负责：把归一化结果**落库**（演练库 ticket_center_dryrun）、
-    读回路由与不变量、出报告、导出 JSON / 渲染前端 POC；
+  - **覆盖判定在数据库里**（fn_variant_covered / fn_variant_coverage_gaps）。
+    本脚本不判断「源变体覆盖得住哪些规范变体」—— 它只把覆盖声明交给库，
+    由库返回映射与缺口。曾经这里有一份 Python 镜像（covers / coverage_gaps），
+    三份实现各自自洽，改了一份另外两份不动 ——
+    分叉的后果是「源侧说覆盖得住、我们的门禁说覆盖不住」；
+  - **组合映射在 Go 侧**（internal/compose，唯一实现）。本脚本通过
+    `tc-connect compose apply` 消费它的输出；
+  - 本脚本只负责：把数据落库、读回结果、出报告、导出 JSON / 渲染前端 POC；
   - 映射规则全部来自 configs/mapping_rules.json（与接入层共用），
     **本文件不出现任何按源分支的代码**；新接一个源 = 在规则文件里加一段配置。
 
@@ -27,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from decimal import Decimal
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,7 +52,7 @@ _TC_CONNECT = None
 def tc_connect_bin():
     """找（或现场构建）tc-connect 二进制。
 
-    归一化的**唯一实现**在 Go 侧（internal/normalize）。演练器通过 CLI 消费它的输出，
+    归一化与组合映射的**唯一实现**都在 Go 侧。演练器通过 CLI 消费它们的输出，
     避免两套规则实现漂移。
     """
     global _TC_CONNECT
@@ -75,40 +82,16 @@ def normalize_via_go(src_key, fixture_path):
     return json.loads(r.stdout)
 
 
-# ---------------------------------------------------------------- 覆盖语义（镜像 fn_variant_covered）
-def covers(coverage, variant):
-    """源变体的覆盖声明是否覆盖规范变体（镜像数据库函数 fn_variant_covered）。"""
-    axes = (coverage or {}).get('axes', {}) or {}
-    excludes = (coverage or {}).get('excludes', []) or []
-    required = []
-    if variant.get('audience'):
-        required.append(('audience', variant['audience']))
-    for axis, opt in (variant.get('axes') or {}).items():
-        required.append((axis, opt))
-    for axis, opt in required:
-        if opt not in (axes.get(axis) or []):
-            return False
-        if opt in excludes:
-            return False
-    return True
+def compose_via_go(src_key, fixture_path):
+    """调 Go 侧的组合映射：组合表达式 → 配方（写库）。
 
-
-def coverage_gaps(coverage, variant):
-    """列出覆盖缺口（诊断用，不用于判定）。"""
-    axes = (coverage or {}).get('axes', {}) or {}
-    excludes = (coverage or {}).get('excludes', []) or []
-    required = []
-    if variant.get('audience'):
-        required.append(('audience', variant['audience']))
-    for axis, opt in (variant.get('axes') or {}).items():
-        required.append((axis, opt))
-    gaps = []
-    for axis, opt in required:
-        if opt not in (axes.get(axis) or []):
-            gaps.append('%s:%s' % (axis, opt))
-        elif opt in excludes:
-            gaps.append('%s:%s(excluded)' % (axis, opt))
-    return gaps
+    返回 (是否成功, 输出文本)。失败不算演练失败 —— 组合映射解不出来是
+    「模型或声明缺一块」，要在报告里说清楚，不是静默吞掉。
+    """
+    r = subprocess.run([tc_connect_bin(), 'compose', 'apply',
+                        '--source', src_key, '--fixture', fixture_path, '--db', DB],
+                       cwd=ROOT, capture_output=True, text=True)
+    return r.returncode == 0, (r.stdout or '') + (r.stderr or '')
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -141,6 +124,35 @@ def lit(v):
     return "'" + str(v).replace("'", "''") + "'"
 
 
+def money(s):
+    """读金额。
+
+    库里的金额是 NUMERIC，直接 float() 会掉精度（122.93 可能是 122.92999999）。
+    先经 Decimal 读成精确十进制，再转成 float 只为渲染/序列化 —— 计算不在这里做。
+    """
+    if not s:
+        return 0.0
+    return float(Decimal(s))
+
+
+def run_sql(stmts, label):
+    """执行一批语句（一个阶段一批）。
+
+    分阶段执行是有意的：覆盖判定要用到规范变体，组合映射要用到源变体，
+    所以顺序是「规范 → 源 → 映射/报价 → 组合 → 上架 → 售价骨架」。
+    """
+    if not stmts:
+        return
+    path = os.path.join(tempfile.gettempdir(), 'dryrun_%s.sql' % label)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(stmts) + '\n')
+    r = subprocess.run([PSQL, '-h', HOST, '-d', DB, '-v', 'ON_ERROR_STOP=1', '-q', '-f', path],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print('演练数据落库失败（%s）：\n%s\n（语句在 %s）' % (label, r.stderr[:3000], path))
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------- 落库
 IDENTITY_TABLES = {
     'product', 'product_axis', 'product_axis_option', 'ticket_type', 'product_variant',
@@ -162,9 +174,15 @@ def with_identity(stmts):
 
 
 def build_canonical(catalog):
+    """规范侧（我们自己的商品与可售单元）。
+
+    组合套餐（variant_role='combo'）在这里声明组件与数量 ——
+    「2 大 1 小」的「几份」是套餐的本质的一部分，不能只写「包含哪些」。
+    """
     stmts = []
     ids = {'product': 100, 'axis': 200, 'option': 300, 'ticket_type': 400, 'variant': 500}
     canon, canon_variants, product_ids = {}, {}, {}
+    relations = []   # 组合声明：最后统一插（子变体可能还没建）
     for p in catalog['products']:
         pid = ids['product']; ids['product'] += 1
         product_ids[p['product_code']] = pid
@@ -197,11 +215,12 @@ def build_canonical(catalog):
         for v in p.get('variants', []):
             vid = ids['variant']; ids['variant'] += 1
             ttid = tt_ids.get(v.get('ticket_type')) if v.get('ticket_type') else None
+            role = v.get('variant_role', 'base')
             stmts.append(
                 "INSERT INTO product_variant (id, product_id, variant_code, variant_key, title, variant_role, ticket_type_id, status, sort_order) "
-                "VALUES (%d, %d, %s, %s, %s, 'base', %s, 'active', %d);" % (
+                "VALUES (%d, %d, %s, %s, %s, %s, %s, 'active', %d);" % (
                     vid, pid, lit(v['key'].replace(':', '-')), lit(v['key']),
-                    lit(v.get('title', v['key'])), lit(ttid), vid))
+                    lit(v.get('title', v['key'])), lit(role), lit(ttid), vid))
             for axis_code, opt_code in (v.get('axes') or {}).items():
                 key = (p['product_code'], axis_code)
                 if key in canon and opt_code in canon[key]:
@@ -213,8 +232,111 @@ def build_canonical(catalog):
                 'id': vid, 'product_id': pid, 'product_code': p['product_code'],
                 'product_title': p['title'], 'audience': v.get('ticket_type'),
                 'axes': v.get('axes') or {}, 'title': v.get('title', v['key']),
+                'role': role,
             }
+            for comp in v.get('components') or []:
+                relations.append((v['key'], comp['variant'], comp.get('quantity', 1)))
+
+    # 组件声明：父变体与子变体都得先存在，所以放在所有变体之后
+    for parent_key, child_key, qty in relations:
+        if parent_key not in canon_variants:
+            raise SystemExit('组合 %s 的组件声明找不到父变体' % parent_key)
+        if child_key not in canon_variants:
+            raise SystemExit('组合 %s 的组件 %s 在规范目录里不存在' % (parent_key, child_key))
+        stmts.append(
+            "INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type, quantity, price_policy, sort_order) "
+            "VALUES (%d, %d, 'included', %s, '{}'::jsonb, 10);" % (
+                canon_variants[parent_key]['id'], canon_variants[child_key]['id'], lit(qty)))
     return stmts, canon, canon_variants, product_ids
+
+
+# ---------------------------------------------------------------- 判定交给数据库
+def mapping_sql(sv_id, coverage):
+    """源变体 → 规范变体的映射：判定在库里（fn_variant_covered）。
+
+    这条语句不替库做判断：它把「哪些规范变体被覆盖住了」交给函数算，
+    自己只负责把命中的那些写成映射行。精确匹配（is_exact）也由库判
+    （fn_variant_coverage_is_exact）—— 「这个源 SKU 恰好等于这个可售单元」
+    还是「这个源 SKU 更宽」是同一条规则，不在脚本里重写一遍。
+
+    组合变体（variant_role='combo'）跳过：组合的供给走配方，
+    直接挂源映射会让定价函数用**一个**源 SKU 的成本给整张套餐定价。
+    库里还有守卫触发器兜底，这里先跳过是为了不让批量插入整条失败。
+    """
+    cov = lit(json.dumps(coverage, ensure_ascii=False))
+    return (
+        "INSERT INTO supplier_variant_mapping (supplier_variant_id, product_variant_id, coverage, is_exact, match_type, confidence, status) "
+        "SELECT %d, pv.id, %s::jsonb, fn_variant_coverage_is_exact(%s::jsonb, pv.id), "
+        "  'rule', 0.95, 'active' "
+        "FROM product_variant pv "
+        "WHERE pv.status = 'active' "
+        "  AND pv.variant_role <> 'combo' "
+        "  AND fn_variant_covered(%s::jsonb, pv.id);" % (sv_id, cov, cov, cov))
+
+
+def price_sql(sp_id, sv_id, pr):
+    """源报价行：写到它覆盖住的每个规范变体上（哪些被覆盖由库里的映射行说了算）。"""
+    return (
+        "INSERT INTO supplier_price_calendar (supplier_product_id, supplier_session_id, product_id, date, currency, "
+        "supplier_price, net_price, status, product_variant_id, supplier_variant_id) "
+        "SELECT %d, NULL::bigint, pv.product_id, %s, %s, %s, %s, 'available', m.product_variant_id, %d "
+        "FROM supplier_variant_mapping m "
+        "JOIN product_variant pv ON pv.id = m.product_variant_id "
+        "WHERE m.supplier_variant_id = %d AND m.status = 'active';" % (
+            sp_id, lit(pr['date']), lit(pr['currency']),
+            lit(pr['sale_price']), lit(pr['net_price']), sv_id, sv_id))
+
+
+def product_mapping_sql():
+    """源商品 → 规范商品：一个（商品，供应商）只留一个 primary（不变量 2）。"""
+    return (
+        "INSERT INTO product_mapping (supplier_product_id, supplier_id, product_id, match_type, confidence, "
+        "match_evidence, is_primary, status, created_by) "
+        "WITH targets AS ("
+        "  SELECT DISTINCT ON (sp.supplier_id, pv.product_id)"
+        "         sp.supplier_id, sv.supplier_product_id, pv.product_id"
+        "    FROM supplier_variant_mapping svm"
+        "    JOIN supplier_variant sv ON sv.id = svm.supplier_variant_id"
+        "    JOIN supplier_product sp ON sp.id = sv.supplier_product_id"
+        "    JOIN product_variant pv ON pv.id = svm.product_variant_id"
+        "   WHERE svm.status = 'active'"
+        "   ORDER BY sp.supplier_id, pv.product_id, sv.supplier_product_id)"
+        "SELECT supplier_product_id, supplier_id, product_id, 'rule', 0.95, "
+        "       '{\"decoded_by\":\"mapping_dryrun\"}', true, 'active', 'dryrun' FROM targets;")
+
+
+def listing_sql(price_policy):
+    """上架：同一规范商品只建一个上架（不变量 15：每个 online 上架必须绑源）。"""
+    return (
+        "INSERT INTO channel_listing (channel_id, product_id, status, price_policy, stock_policy, booking_policy, "
+        "min_order_qty, max_order_qty, sort_weight, published_at) "
+        "SELECT 1, t.product_id, 'online', %s, '{\"mode\":\"full\"}', '{\"mode\":\"instant\"}', 1, 10, 50, now() "
+        "  FROM (SELECT DISTINCT product_id FROM product_mapping WHERE status = 'active' ORDER BY product_id) t;" % lit(
+            json.dumps(price_policy, ensure_ascii=False)))
+
+
+def listing_source_sql():
+    """上架 ↔ 源商品：一个源商品在它的规范商品的上架里排一个优先级。"""
+    return (
+        "INSERT INTO channel_listing_source (channel_listing_id, supplier_product_id, supplier_id, priority, "
+        "fallback_order, min_margin, max_daily_qty, enabled) "
+        "SELECT cl.id, pm.supplier_product_id, pm.supplier_id, "
+        "       10 * row_number() OVER (ORDER BY pm.supplier_id, pm.supplier_product_id), "
+        "       row_number() OVER (ORDER BY pm.supplier_id, pm.supplier_product_id), "
+        "       0, NULL, true "
+        "  FROM product_mapping pm "
+        "  JOIN channel_listing cl ON cl.product_id = pm.product_id AND cl.channel_id = 1 "
+        " WHERE pm.status = 'active';")
+
+
+def price_calendar_sql(base_currency):
+    """对客售价骨架：只写「卖哪一行」，金额一律交给数据库里的定价函数。"""
+    return (
+        "INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, status, source, product_variant_id) "
+        "SELECT DISTINCT pv.product_id, NULL::bigint, NULL::bigint, NULL::bigint, spc.date, %s, 'active', 'sync', spc.product_variant_id "
+        "  FROM supplier_price_calendar spc "
+        "  JOIN product_variant pv ON pv.id = spc.product_variant_id "
+        " WHERE spc.status = 'available';" % lit(base_currency))
 
 
 # ---------------------------------------------------------------- 主流程
@@ -225,33 +347,41 @@ def run():
     pricing_rule = rules.get('pricing', {})
     TODAY = rules.get('base_date', TODAY)
 
+    # ---- ① 规范侧先落库：覆盖判定要用到规范变体
     stmts, canon, canon_variants, product_ids = build_canonical(catalog)
     stmts.append(
         "INSERT INTO channel (id, code, name, channel_type, settlement_mode, commission_rate, default_currency, tax_policy, status, config) "
         "VALUES (1,'C2C','OTA 自营 C 端','b2c_own','prepaid',0,'CNY','{\"included\":true,\"rate\":0.06}','active','{}'::jsonb);")
 
+    # 全局口径：基准币种、锁价口径。这些以前散在 Python 里，现在是数据库里的配置。
+    base_currency = 'CNY'
+    stmts.append(
+        "INSERT INTO app_setting (key, value, description) "
+        "VALUES ('base_currency', %s, '演练库：跨币种比价的基准币种'), "
+        "       ('price_locked_uses_source_list_price', %s, '演练库：源侧价格保护时售价锁定为源挂牌价');" % (
+            lit(base_currency),
+            lit('true' if pricing_rule.get('price_locked_uses_source_list_price') else 'false')))
+    run_sql(with_identity(stmts), 'canonical')
+
+    # ---- ② 源侧逐个落库：源 → 源商品 → 源变体 → 映射（库里判） → 报价（库里判）
     sid = 600
     sp_id = 700
     sv_id = 600
-    listing_id = 800
-    seen_listings = set()
-    primary_assigned = set()
-    price_candidates = {}
     src_report = []
-    unmapped = []
     source_variants_out = []
-    mappings_out = []
+    compose_out = []
 
     for src_key, rule in rules['sources'].items():
         fixture_path = os.path.join(FIXTURES, rule['fixture'])
         sid += 1
-        stmts.append(
+        stmts = [
             "INSERT INTO supplier (id, code, name, short_name, country_code, default_currency, timezone, status, capability, sync_policy, connector_version) "
             "VALUES (%d, %s, %s, %s, 'CN', %s, 'Asia/Shanghai', 'active', "
             "'{\"product\":true,\"price\":true,\"session\":true,\"availability\":\"live\",\"booking\":true,\"cancel\":true}', "
             "'{\"catalog\":\"daily\"}','dryrun');" % (
                 sid, lit(rule['supplier_code']), lit(rule['supplier_name']),
-                lit(rule['supplier_code'][:3].upper()), lit(rule.get('currency', 'CNY'))))
+                lit(rule['supplier_code'][:3].upper()), lit(rule.get('currency', 'CNY')))
+        ]
 
         # 归一化交给 Go 实现（唯一实现）：演练器只负责落库与报告
         norm = normalize_via_go(src_key, fixture_path)
@@ -268,7 +398,6 @@ def run():
                     lit(json.dumps(doc, ensure_ascii=False)),
                     lit(json.dumps(doc, ensure_ascii=False)), src_key, doc_idx))
 
-            # 解析该源商品的源变体 + 价格
             variants = product.get('variants') or []
             prices = product.get('prices') or {}
             if not variants:
@@ -285,136 +414,130 @@ def run():
                         lit(json.dumps(sv['attrs'], ensure_ascii=False)),
                         lit(json.dumps(sv['raw'], ensure_ascii=False)), lit(sv['price_locked'])))
 
-            # 变体级覆盖语义匹配：源变体 → 所有规范变体
+            # 变体级覆盖语义匹配与源报价：都交给数据库判
             for sv in variants:
-                matched_keys = []
-                for vkey, v in canon_variants.items():
-                    if covers(sv['coverage'], v):
-                        matched_keys.append(vkey)
-                        stmts.append(
-                            "INSERT INTO supplier_variant_mapping (supplier_variant_id, product_variant_id, coverage, is_exact, match_type, confidence, status) "
-                            "VALUES (%d, %d, %s, %s, 'rule', 0.95, 'active');" % (
-                                sv_index[sv['external_id']], v['id'],
-                                lit(json.dumps(sv['coverage'], ensure_ascii=False)),
-                                lit(len(sv['coverage']['axes']) == len([a for a in v['axes']] ) + (1 if v['audience'] else 0))))
-                        mappings_out.append({
-                            'source': rule['supplier_code'], 'source_product': str(ext_pid),
-                            'source_product_name': ext_pname,
-                            'source_variant': sv['external_id'], 'source_variant_title': sv['title'],
-                            'canonical_product': v['product_code'], 'canonical_product_title': v['product_title'],
-                            'canonical_variant': vkey, 'canonical_variant_title': v['title'],
-                            'coverage': sv['coverage'], 'price_locked': sv['price_locked'],
-                        })
-                gaps_for = []
-                for vkey, v in canon_variants.items():
-                    if vkey not in matched_keys:
-                        g = coverage_gaps(sv['coverage'], v)
-                        if g:
-                            gaps_for.append({'variant': vkey, 'gaps': g})
+                stmts.append(mapping_sql(sv_index[sv['external_id']], sv['coverage']))
+                for pr in (prices.get(sv['external_id']) or []):
+                    stmts.append(price_sql(sp_id, sv_index[sv['external_id']], pr))
                 source_variants_out.append({
                     'source': rule['supplier_code'], 'source_product': str(ext_pid),
                     'source_product_name': ext_pname,
                     'external_id': sv['external_id'], 'title': sv['title'],
                     'coverage': sv['coverage'], 'price_locked': sv['price_locked'],
-                    'matched': matched_keys, 'near_miss': gaps_for[:6],
                 })
 
-                # 源成本价：一行 = 源变体 × 规范变体 × 日期（一个变体可有多天报价）
-                for pr in (prices.get(sv['external_id']) or []):
-                    for vkey in matched_keys:
-                        v = canon_variants[vkey]
-                        stmts.append(
-                            "INSERT INTO supplier_price_calendar (supplier_product_id, supplier_session_id, product_id, date, currency, supplier_price, net_price, status, product_variant_id, supplier_variant_id) "
-                            "VALUES (%d, NULL, %d, %s, %s, %s, %s, 'available', %d, %d);" % (
-                                sp_id, v['product_id'], lit(pr['date']), lit(pr['currency']),
-                                lit(pr['sale_price']), lit(pr['net_price']),
-                                v['id'], sv_index[sv['external_id']]))
-                        price_candidates.setdefault(v['id'], []).append({
-                            'sp_id': sp_id, 'sv_id': sv_index[sv['external_id']],
-                            'date': pr['date'], 'currency': pr['currency'],
-                            'sale_price': pr['sale_price'], 'net_price': pr['net_price'],
-                            'locked': sv['price_locked'], 'supplier': rule['supplier_code'],
-                            'source_variant': sv['external_id'],
-                        })
-
-            # 商品级映射（由变体匹配反推）：一个源商品可映射到多个规范商品
-            tgt_products = []
-            for vkey in {m['canonical_variant'] for m in mappings_out if m['source_product'] == str(ext_pid) and m['source'] == rule['supplier_code']}:
-                pc = canon_variants[vkey]['product_code']
-                if pc not in tgt_products:
-                    tgt_products.append(pc)
-            for pc in tgt_products:
-                # 不变量 2：同一规范商品在同一供应商下最多一个 primary 映射
-                key = (product_ids[pc], sid)
-                is_primary = key not in primary_assigned
-                if is_primary:
-                    primary_assigned.add(key)
-                stmts.append(
-                    "INSERT INTO product_mapping (supplier_product_id, supplier_id, product_id, match_type, confidence, match_evidence, is_primary, status, created_by) "
-                    "VALUES (%d, %d, %d, 'rule', 0.95, '{\"decoded_by\":\"mapping_dryrun\",\"source\":\"%s\"}', %s, 'active', 'dryrun');" % (
-                        sp_id, sid, product_ids[pc], rule['supplier_code'], lit(is_primary)))
-
-            # 上架（同一规范商品只建一个上架）
-            for pc in tgt_products:
-                if product_ids[pc] not in seen_listings:
-                    seen_listings.add(product_ids[pc])
-                    listing_id += 1
-                    stmts.append(
-                        "INSERT INTO channel_listing (id, channel_id, product_id, status, price_policy, stock_policy, booking_policy, min_order_qty, max_order_qty, sort_weight, published_at) "
-                        "VALUES (%d, 1, %d, 'online', '{}', '{\"mode\":\"full\"}', '{\"mode\":\"instant\"}', 1, 10, 50, now());" % (
-                            listing_id, product_ids[pc]))
-                stmts.append(
-                    "INSERT INTO channel_listing_source (channel_listing_id, supplier_product_id, supplier_id, priority, fallback_order, min_margin, max_daily_qty, enabled) "
-                    "SELECT (SELECT cl.id FROM channel_listing cl WHERE cl.product_id = %d LIMIT 1), %d, %d, %d, %d, 0.10, NULL, true;" % (
-                        product_ids[pc], sp_id, sid, 10 * len(src_report) + 10, len(src_report) + 1))
             src_report.append({'source': rule['supplier_code'], 'sp_id': sp_id,
                                 'external_id': str(ext_pid), 'name': ext_pname,
                                 'variants': len(variants)})
 
-        # 组合表达式（Go 侧解析，语法已核实：SKU / SKU|2 / A|2+B|1）
-        for expr in norm.get('composite_expressions') or []:
-            if not expr['is_composite']:
-                continue
-            union = {'axes': {}, 'excludes': []}
-            for part in expr['parts']:
-                src_sv = next((x for x in source_variants_out
-                               if x['source'] == rule['supplier_code'] and x['external_id'] == part['sku_id']), None)
-                if not src_sv:
-                    continue
-                for ax, opts in src_sv['coverage']['axes'].items():
-                    union['axes'].setdefault(ax, [])
-                    for o in opts:
-                        if o not in union['axes'][ax]:
-                            union['axes'][ax].append(o)
-            hit = [vkey for vkey, v in canon_variants.items() if covers(union, v)]
-            unmapped.append({'source': rule['supplier_code'], 'our_variant': expr['our_variant'],
-                             'mapping_id': expr['mapping_id'], 'parts': expr['parts'],
-                             'union': union, 'would_cover': hit})
+        run_sql(with_identity(stmts), 'source_' + src_key)
 
-    # ---- 对客售价：一个变体一行，取采纳成本最低的源
-    for tgt, cands in price_candidates.items():
-        best = min(cands, key=lambda c: (float(c['net_price'] or 0), c['supplier']))
-        net = best['net_price'] or 0
-        if best['locked'] and pricing_rule.get('price_locked_uses_source_list_price'):
-            sell, locked = best['sale_price'], True
-        else:
-            sell = round(float(net) * (1 + pricing_rule.get('markup_percent', 10.0) / 100.0), 2)
-            locked = False
-        v = next(v for v in canon_variants.values() if v['id'] == tgt)
-        stmts.append(
-            "INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, cost_price, cost_source_product_id, sell_price, list_price, discount_pct, rule, status, source, product_variant_id, price_locked) "
-            "VALUES (%d, NULL, NULL, NULL, %s, %s, %s, %d, %s, %s, 0, '{}', 'active', 'sync', %d, %s);" % (
-                v['product_id'], lit(best['date']), lit(best['currency']), lit(net), best['sp_id'],
-                lit(sell), lit(sell), tgt, lit(locked)))
+        # ---- ③ 组合映射（方向 B）：交给 Go 实现
+        ok, text = compose_via_go(src_key, fixture_path)
+        compose_out.append({
+            'source': rule['supplier_code'],
+            'ok': ok,
+            'output': text.strip(),
+            'expressions': [e for e in norm.get('composite_expressions') or [] if e['is_composite']],
+        })
 
-    stmts = with_identity(stmts)
-    script = '\n'.join(stmts)
-    with open('/tmp/dryrun_seed.sql', 'w', encoding='utf-8') as f:
-        f.write(script)
-    r = subprocess.run([PSQL, '-h', HOST, '-d', DB, '-v', 'ON_ERROR_STOP=1', '-q', '-f', '/tmp/dryrun_seed.sql'],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        print('演练数据落库失败:\n' + r.stderr[:3000]); sys.exit(1)
+    # ---- ④ 商品映射与上架：源商品能供哪些规范商品，读回库里的映射结果
+    run_sql([product_mapping_sql()], 'product_mapping')
+    run_sql([listing_sql({"mode": "cost_plus",
+                          "percent": pricing_rule.get('markup_percent', 10.0)}),
+             listing_source_sql()], 'listing')
+
+    # ---- ⑤ 对客售价：只写骨架（卖哪一行），金额一律交给数据库里的定价函数
+    #
+    # 以前这里在 Python 里算钱：float() 算成本、跨币种直接比大小、还把不同日期的报价
+    # 混在一起挑一个最便宜的。那是「同一批源数据、三个地方、三个价格」的来源之一。
+    # 现在：骨架行（变体 × 日期）写进 price_calendar，落库后调 fn_reprice_rows()，
+    # 成本 / 售价 / 划线价 / 锁价 / 汇率留痕全部由 fn_price_variant 算（唯一实现）。
+    run_sql([price_calendar_sql(base_currency)], 'price_calendar')
+
+    # ---- ⑥ 定价：调数据库里的唯一实现（fn_price_variant）
+    #     这一步之前演练器在 Python 里自己算价。现在成本、售价、锁价、汇率留痕
+    #     全部由 SQL 算，演练器只负责喂数据和读结果。
+    repriced = q("SELECT fn_reprice_rows();")
+    repriced_rows = int(repriced[0][0]) if repriced else 0
+    unpriced = q("""SELECT format('变体%s@%s', product_variant_id, date)
+                      FROM price_calendar
+                     WHERE status = 'active' AND product_variant_id IS NOT NULL
+                       AND (sell_price IS NULL OR cost_price IS NULL)
+                     ORDER BY id;""")
+    if unpriced:
+        print('以下售价行没有定价（缺源报价 / 缺上架关系 / 缺汇率快照）：')
+        for row in unpriced:
+            print('  %s' % row[0])
+
+    # ---- ⑦ 读回结果（报告与 POC 用）
+    matched_by_source = {}
+    for row in q("""SELECT sup.code, sv.external_variant_id, pv.variant_key
+                      FROM supplier_variant_mapping svm
+                      JOIN supplier_variant sv ON sv.id = svm.supplier_variant_id
+                      JOIN supplier_product sp ON sp.id = sv.supplier_product_id
+                      JOIN supplier sup ON sup.id = sp.supplier_id
+                      JOIN product_variant pv ON pv.id = svm.product_variant_id
+                     WHERE svm.status = 'active';"""):
+        matched_by_source.setdefault((row[0], row[1]), []).append(row[2])
+
+    gaps_by_source = load_gaps(source_variants_out)
+    for sv in source_variants_out:
+        sv['matched'] = matched_by_source.get((sv['source'], sv['external_id']), [])
+        sv['near_miss'] = gaps_by_source.get(sv['external_id'], [])[:6]
+
+    mappings_out = []
+    for row in q("""SELECT sup.code, sp.external_id, sv.external_variant_id, sv.title,
+                           pv.variant_key, pv.title, p.product_code, p.title, svm.coverage
+                      FROM supplier_variant_mapping svm
+                      JOIN supplier_variant sv ON sv.id = svm.supplier_variant_id
+                      JOIN supplier_product sp ON sp.id = sv.supplier_product_id
+                      JOIN supplier sup ON sup.id = sp.supplier_id
+                      JOIN product_variant pv ON pv.id = svm.product_variant_id
+                      JOIN product p ON p.id = pv.product_id
+                     WHERE svm.status = 'active'
+                     ORDER BY sup.code, p.id, pv.sort_order;"""):
+        cov = json.loads(row[8]) if row[8] else {'axes': {}, 'excludes': []}
+        locked = any(s['source'] == row[0] and s['external_id'] == row[2] and s['price_locked']
+                     for s in source_variants_out)
+        mappings_out.append({
+            'source': row[0], 'source_product': row[1],
+            'source_variant': row[2], 'source_variant_title': row[3],
+            'canonical_variant': row[4], 'canonical_variant_title': row[5],
+            'canonical_product': row[6], 'canonical_product_title': row[7],
+            'coverage': cov, 'price_locked': locked,
+        })
+
+    compositions = []
+    for row in q("""SELECT variant_key, component_variant_key, source_quantity,
+                           declared_quantity, external_variant_id, supplier_code
+                      FROM v_variant_composition
+                     ORDER BY variant_key, source_quantity DESC;"""):
+        compositions.append({
+            'our_variant': row[0], 'component': row[1],
+            'source_quantity': row[2], 'declared_quantity': row[3],
+            'source_variant': row[4], 'source': row[5],
+        })
+
+    # 组合不走方向 A（组合的供给走配方）。但「某个源 SKU 覆盖得住这个组合」
+    # 这件事要报出来 —— 源侧也许是把整套套餐当一个 SKU 卖的，
+    # 那是我们现在接不了的情况（宁可少卖，不可卖错），得让人知道。
+    combo_direct = []
+    if source_variants_out:
+        values = ", ".join(
+            "(%s, %s, %s)" % (lit(sv['source']), lit(sv['external_id']),
+                               lit(json.dumps(sv['coverage'], ensure_ascii=False)))
+            for sv in source_variants_out)
+        for row in q(
+                "SELECT v.source, v.external_id, pv.variant_key "
+                "FROM (VALUES %s) AS v(source, external_id, coverage) "
+                "JOIN supplier_variant sv ON sv.external_variant_id = v.external_id "
+                "JOIN supplier_product sp ON sp.id = sv.supplier_product_id "
+                "JOIN supplier sup ON sup.id = sp.supplier_id AND sup.code = v.source "
+                "CROSS JOIN product_variant pv "
+                "WHERE pv.variant_role = 'combo' AND pv.status = 'active' "
+                "  AND fn_variant_covered(v.coverage::jsonb, pv.id);" % values):
+            combo_direct.append({'source': row[0], 'source_variant': row[1], 'our_variant': row[2]})
 
     # ---- 从库里把结果读出来（POC 用）
     routing = []
@@ -431,9 +554,9 @@ def run():
                      ORDER BY pv.sort_order, vrc.route_rank;"""):
         routing.append({
             'variant_key': row[0], 'variant_title': row[1], 'product_code': row[2], 'product_title': row[3],
-            'supplier': row[4], 'source_variant': row[5], 'net_price': float(row[6] or 0),
-            'cost_base': float(row[7] or 0), 'route_rank': int(row[8]), 'currency': row[9],
-            'sell_price': float(row[10] or 0), 'price_locked': row[11] == 't', 'date': row[12],
+            'supplier': row[4], 'source_variant': row[5], 'net_price': money(row[6]),
+            'cost_base': money(row[7]), 'route_rank': int(row[8]), 'currency': row[9],
+            'sell_price': money(row[10]), 'price_locked': row[11] == 't', 'date': row[12],
         })
 
     invariants = []
@@ -448,8 +571,22 @@ def run():
                 'product_code': p['product_code'], 'product_title': p['title'],
                 'audience': v.get('ticket_type'),
                 'axes': v.get('axes') or {},
+                'variant_role': v.get('variant_role', 'base'),
+                'components': v.get('components') or [],
                 'axis_names': {a['code']: a['name'] for a in p.get('axes', [])},
                 'option_names': {o['code']: o['name'] for a in p.get('axes', []) for o in a['options']},
+            })
+
+    gaps = []
+    for c in compose_out:
+        if c['ok']:
+            continue
+        for e in c['expressions']:
+            gaps.append({
+                'source': c['source'], 'our_variant': e['our_variant'],
+                'mapping_id': e['mapping_id'], 'parts': e['parts'],
+                'resolved': False,
+                'detail': c['output'],
             })
 
     return {
@@ -464,29 +601,56 @@ def run():
         'source_variants': source_variants_out,
         'mappings': mappings_out,
         'routing': routing,
-        'gaps': unmapped,
+        'compositions': compositions,
+        'combo_direct': combo_direct,
+        'gaps': gaps,
         'invariants': invariants,
+        'repriced_rows': repriced_rows,
         'counts': {
             'source_products': len(src_report),
             'source_variants': len(source_variants_out),
             'mappings': len(mappings_out),
             'canonical_variants': len(canonical_out),
             'routing_rows': len(routing),
-            'gaps': len(unmapped),
+            'compositions': len(compositions),
+            'combo_direct': len(combo_direct),
+            'gaps': len(gaps),
             'invariant_failures': len([i for i in invariants if i['result'] != 'PASS']),
         },
     }
 
 
+def load_gaps(source_variants_out):
+    """覆盖缺口：判定与缺口都在库里（fn_variant_coverage_gaps）。
+
+    脚本只负责把每个源变体的覆盖声明递进去、把缺口读出来。
+    """
+    if not source_variants_out:
+        return {}
+    values = ", ".join(
+        "(%s, %s)" % (lit(sv['external_id']), lit(json.dumps(sv['coverage'], ensure_ascii=False)))
+        for sv in source_variants_out)
+    sql = ("SELECT v.external_id, pv.variant_key, "
+           "array_to_string(fn_variant_coverage_gaps(v.coverage::jsonb, pv.id), ',') "
+           "FROM (VALUES %s) AS v(external_id, coverage) "
+           "CROSS JOIN product_variant pv "
+           "WHERE pv.status = 'active' AND NOT fn_variant_covered(v.coverage::jsonb, pv.id);" % values)
+    out = {}
+    for row in q(sql):
+        gaps = row[2].split(',') if row[2] else []
+        out.setdefault(row[0], []).append({'variant': row[1], 'gaps': gaps})
+    return out
+
+
 def print_report(d):
     print('=' * 82)
-    print('无凭证集成演练：源报文 → 归一化 → 变体映射 → 路由')
+    print('无凭证集成演练：源报文 → 归一化 → 变体映射 → 组合映射 → 路由')
     print('演练库：%s   基准日期：%s' % (DB, d['base_date']))
     print('=' * 82)
     c = d['counts']
-    print('源商品 %d · 源变体 %d · 变体映射 %d · 规范变体 %d · 路由候选 %d · 模型缺口 %d · 不变量违规 %d'
+    print('源商品 %d · 源变体 %d · 变体映射 %d · 规范变体 %d · 路由候选 %d · 组合配方 %d · 解不出的组合 %d · 不变量违规 %d'
           % (c['source_products'], c['source_variants'], c['mappings'], c['canonical_variants'],
-             c['routing_rows'], c['gaps'], c['invariant_failures']))
+             c['routing_rows'], c['compositions'], c['gaps'], c['invariant_failures']))
     print()
     print('── ① 源报文 → 源变体与覆盖声明 ─────────────────────────────')
     by_src = {}
@@ -500,28 +664,33 @@ def print_report(d):
                 json.dumps(sv['coverage']['axes'], ensure_ascii=False),
                 '  [价格保护]' if sv['price_locked'] else ''))
     print()
-    print('── ② 覆盖语义匹配 ────────────────────────────────────────')
+    print('── ② 覆盖语义匹配（判定在库里的 fn_variant_covered）────────')
     for m in d['mappings']:
         print('  %-24s ← %-10s %-26s%s' % (m['canonical_variant'], m['source'], m['source_variant'],
                                           '  [价格保护]' if m['price_locked'] else ''))
     print()
     print('── ③ 变体级路由（route_rank=1 = 首选源）────────────────────')
     for r in d['routing']:
-        print('  %-26s ← %-10s %-26s net=%-9s rank=%s%s' % (
-            r['variant_key'], r['supplier'], r['source_variant'], r['net_price'], r['route_rank'],
+        print('  %-26s %-10s ← %-10s %-26s net=%-9s rank=%s%s' % (
+            r['date'], r['variant_key'], r['supplier'], r['source_variant'], r['net_price'], r['route_rank'],
             '  [锁价]' if r['price_locked'] else ''))
     print()
-    print('── ④ 当前模型表达不了的源侧结构 ──────────────────────────')
-    if not d['gaps']:
+    print('── ④ 组合映射（方向 B：一个可售单元由多个源 SKU 组成）────')
+    if not d['compositions'] and not d['gaps']:
         print('  （无）')
-    for u in d['gaps']:
-        parts = ' + '.join('%s×%d' % (p['sku_id'], p['qty']) for p in u['parts'])
-        print('  ✗ %s · 我们的变体 %s' % (u['source'], u['our_variant']))
-        print('      mappingId = %s' % u['mapping_id'])
+    for comp in d['compositions']:
+        print('  %-22s = %-22s × %-4s ← 源 SKU %s（%s）' % (
+            comp['our_variant'], comp['component'], comp['source_quantity'],
+            comp['source_variant'], comp['source']))
+    for g in d['gaps']:
+        parts = ' + '.join('%s×%d' % (p['sku_id'], p['qty']) for p in g['parts'])
+        print('  ✗ %s · 我们的变体 %s' % (g['source'], g['our_variant']))
+        print('      mappingId = %s' % g['mapping_id'])
         print('      拆解 = %s' % parts)
-        print('      并集覆盖 = %s' % json.dumps(u['union']['axes'], ensure_ascii=False))
-        print('      可覆盖 = %s' % ', '.join(u['would_cover']))
-        print('      → 一个可售单元由 %d 个源 SKU 组成，单个 supplier_variant 无法表达' % len(u['parts']))
+        print('      → %s' % (g['detail'].strip().splitlines()[0] if g['detail'].strip() else '解不出来'))
+    for cd in d.get('combo_direct') or []:
+        print('  ! 源 SKU %s（%s）覆盖得住组合 %s，但组合不走方向 A（供给走配方）—— 接不了'
+              % (cd['source_variant'], cd['source'], cd['our_variant']))
     print()
     print('── ⑤ 不变量自检 ─────────────────────────────────────────')
     bad = [i for i in d['invariants'] if i['result'] != 'PASS']
@@ -545,10 +714,11 @@ def main():
                     "DROP DATABASE IF EXISTS %s;" % DB], capture_output=True, text=True)
     subprocess.run([PSQL, '-h', HOST, '-d', 'postgres', '-q', '-c',
                     "CREATE DATABASE %s;" % DB], capture_output=True, text=True)
-    r = subprocess.run([PSQL, '-h', HOST, '-d', DB, '-v', 'ON_ERROR_STOP=1', '-q', '-f',
-                        os.path.join(ROOT, 'db', 'schema.sql')], capture_output=True, text=True)
+    # 建结构走迁移引擎（db/migrations），不是手搓一份 DDL。
+    r = subprocess.run([tc_connect_bin(), 'migrate', '--db', DB],
+                       cwd=ROOT, capture_output=True, text=True)
     if r.returncode != 0:
-        print('schema.sql 执行失败:\n' + r.stderr[:2000]); sys.exit(1)
+        print('迁移失败:\n' + (r.stderr or r.stdout)[:2000]); sys.exit(1)
 
     data = run()
     print_report(data)
@@ -569,7 +739,6 @@ def main():
         print('POC 页面已生成：%s' % path)
 
     # 不变量违规必须让命令失败，否则 `make check` 会带着红灯放行。
-    # 模型缺口（组合表达式表达不了）不算失败，那是已知待办，在报告 ④ 里单独列。
     failed = data['counts']['invariant_failures']
     if failed:
         print()

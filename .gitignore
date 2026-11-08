@@ -2,8 +2,11 @@
 /bin/
 
 # 演练生成物（make poc / make dryrun 重新生成）
-/scripts/poc/data.json
-/scripts/poc/index.html
+/scripts/poc/
+
+# Python 缓存
+__pycache__/
+*.pyc
 
 # 会话记忆与工具缓存
 /.remember/

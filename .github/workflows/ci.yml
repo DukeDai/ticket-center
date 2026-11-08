@@ -34,7 +34,7 @@ jobs:
           go-version: "1.23"
 
       # check = vet + test-strict + build + mock + dbcheck + dryrun
-      # dbcheck 在一次性库里跑 schema → seed → verify.sql，38 条不变量必须全绿
+      # dbcheck 在一次性库里跑 迁移 → seed → verify.sql，92 条不变量必须全绿
       - name: 提交前自检
         run: make check
 

@@ -112,14 +112,22 @@ function variantRow(v){
       `<span class="chip ax">${a}=${o}</span>`).join('');
   const aud = v.audience ? `<span class="chip">${v.audience}</span>` : '';
   const routes = D.routing.filter(r=>r.variant_key===v.key);
-  const rk = routes.length ? `<span class="badge b-ok">${routes.length} 源可履约</span>` : `<span class="badge b-bad">无源可履约</span>`;
+  const isCombo = v.variant_role === 'combo';
+  const comps = isCombo ? D.compositions.filter(c=>c.our_variant===v.key) : [];
+  const rk = isCombo
+    ? `<span class="badge b-ok">组合 · ${comps.length} 成分</span>`
+    : (routes.length ? `<span class="badge b-ok">${routes.length} 源可履约</span>` : `<span class="badge b-bad">无源可履约</span>`);
   const gap = D.gaps.find(g=>g.our_variant===v.key);
-  const gapb = gap ? `<span class="badge b-bad">组合表达不了</span>` : '';
+  const gapb = gap ? `<span class="badge b-bad">组合解不出来</span>` : '';
+  const compList = isCombo
+    ? `<div class="chips">${(v.components||[]).map(c=>`<span class="chip ax">${c.variant} × ${c.quantity}</span>`).join('')}</div>`
+    : '';
   return `<div class="vrow">
     <div>
       <div class="vk">${v.key}</div>
       <div class="vt">${v.title||''}</div>
       <div class="chips">${aud}${chips}</div>
+      ${compList}
     </div>
     <div style="text-align:right;display:flex;flex-direction:column;gap:5px;align-items:flex-end">${rk}${gapb}</div>
   </div>`;
@@ -174,11 +182,28 @@ function routingHTML(){
       </tr>`).join('') + '</tbody></table>';
 }
 
-function gapsHTML(){
-  if(!D.gaps.length) return '';
-  return D.gaps.map(g=>`
+function composeHTML(){
+  if(!D.compositions.length && !D.gaps.length) return '';
+  const byCombo = {};
+  D.compositions.forEach(c=>{
+    (byCombo[c.our_variant] = byCombo[c.our_variant] || []).push(c);
+  });
+  const ok = Object.keys(byCombo).map(k=>`
     <div class="gap">
-      <h3>⚠ 当前模型表达不了的源侧结构</h3>
+      <h3 style="color:var(--ok)">✓ 组合映射已解出配方</h3>
+      <div style="font-size:12.5px;color:var(--fg2)">
+        规范变体 <code style="font-family:var(--mono);color:var(--accent)">${k}</code>
+        由 ${byCombo[k].length} 个源 SKU 组成（方向 B）：
+      </div>
+      <ul>
+        ${byCombo[k].map(c=>`<li>${c.component} × ${c.source_quantity}
+          ← 源 SKU <span class="mono">${c.source_variant}</span>（${srcName(c.source)}）
+          ${Number(c.source_quantity)===Number(c.declared_quantity)?'':'<span style="color:var(--bad)">与声明数量不一致</span>'}</li>`).join('')}
+      </ul>
+    </div>`).join('');
+  const bad = D.gaps.map(g=>`
+    <div class="gap">
+      <h3 style="color:var(--bad)">⚠ 解不出来的组合</h3>
       <div style="font-size:12.5px;color:var(--fg2)">
         源 <b style="color:var(--gt)">${srcName(g.source)}</b> 用一个组合表达式表达我们的变体
         <code style="font-family:var(--mono);color:var(--accent)">${g.our_variant}</code>：
@@ -186,11 +211,10 @@ function gapsHTML(){
       <div class="mp">${g.mapping_id}</div>
       <ul>
         <li>拆解：${g.parts.map(p=>p.sku_id+' × '+p.qty).join('  +  ')}</li>
-        <li>各部分覆盖的并集：<span class="mono">${JSON.stringify(g.union.axes)}</span></li>
-        <li>组合起来可覆盖：${g.would_cover.map(c=>'<span class="chip">'+c+'</span>').join(' ')}</li>
-        <li style="color:var(--bad)">但一个可售单元由 ${g.parts.length} 个源 SKU 组成，单个 <code>supplier_variant</code> 无法表达 → 需要组合履约表</li>
+        <li style="color:var(--bad)">${(g.detail||'').trim().split('\n')[0]||'解不出来'}</li>
       </ul>
     </div>`).join('');
+  return ok + bad;
 }
 
 function invariantsHTML(){
@@ -209,7 +233,8 @@ function render(){
     <div class="stat"><b>${c.canonical_variants}</b><span>规范变体</span></div>
     <div class="stat"><b>${c.mappings}</b><span>变体映射</span></div>
     <div class="stat"><b>${c.routing_rows}</b><span>路由候选</span></div>
-    <div class="stat ${c.gaps?'warn':'ok'}"><b>${c.gaps}</b><span>模型缺口</span></div>
+    <div class="stat ${c.gaps?'warn':'ok'}"><b>${c.compositions}</b><span>组合配方</span></div>
+    <div class="stat ${c.gaps?'warn':'ok'}"><b>${c.gaps}</b><span>解不出的组合</span></div>
     <div class="stat ${c.invariant_failures?'bad':'ok'}"><b>${D.invariants.length - c.invariant_failures}/${D.invariants.length}</b><span>不变量</span></div>`;
 
   document.getElementById('tabs').innerHTML =
@@ -224,7 +249,7 @@ function render(){
   document.getElementById('matrix').innerHTML = matrixHTML();
   document.getElementById('match').innerHTML = matchHTML();
   document.getElementById('routing').innerHTML = routingHTML();
-  document.getElementById('gaps').innerHTML = gapsHTML();
+  document.getElementById('gaps').innerHTML = composeHTML();
   document.getElementById('inv').innerHTML = invariantsHTML();
 }
 render();
@@ -245,7 +270,7 @@ def render(data):
 <header>
   <div>
     <h1><span class="dot"></span>多源票券 · 变体映射 POC</h1>
-    <div class="sub">无凭证集成演练：源报文 → 归一化 → <b>覆盖语义匹配</b> → 变体级路由　·　演练库 <code>ticket_center_dryrun</code>　·　基准日期 <code>%s</code></div>
+    <div class="sub">无凭证集成演练：源报文 → 归一化 → <b>覆盖语义匹配</b> → 变体级路由 → <b>组合映射</b>　·　演练库 <code>ticket_center_dryrun</code>　·　基准日期 <code>%s</code></div>
   </div>
   <div class="stats" id="stats"></div>
 </header>
@@ -271,7 +296,10 @@ def render(data):
   </div>
 </div>
 
-<div id="gaps"></div>
+<div class="card">
+  <h2>组合映射 <span class="hint">方向 B：一个可售单元由多个源 SKU 按数量组成</span></h2>
+  <div id="gaps"></div>
+</div>
 
 <div class="card">
   <h2>不变量自检 <span class="hint">演练库实跑 v_invariant_checks</span></h2>
@@ -288,7 +316,7 @@ def render(data):
       <span><i style="background:var(--gt)"></i>GlobalTix</span>
     </div>
   </div>
-  <div>数据来源：<code>scripts/fixtures/*.json</code>（真实报文结构 mock）　·　映射规则：<code>scripts/mapping_rules.json</code></div>
+  <div>数据来源：<code>fixtures/*.json</code>（真实报文结构 mock）　·　映射规则：<code>configs/mapping_rules.json</code></div>
 </footer>
 
 <script>window.__DATA__=%s;</script>
