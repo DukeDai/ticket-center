@@ -17,6 +17,7 @@ import (
 
 	"ticket-center/internal/apperr"
 	"ticket-center/internal/config"
+	"ticket-center/internal/coverage"
 	"ticket-center/internal/normalize"
 	"ticket-center/internal/registry"
 	"ticket-center/internal/store"
@@ -54,8 +55,8 @@ type LayerResult struct {
 
 // SupplierRun 一个源的分层结果。
 type SupplierRun struct {
-	Supplier string       `json:"supplier"`
-	Fatal    string       `json:"fatal,omitempty"`
+	Supplier string        `json:"supplier"`
+	Fatal    string        `json:"fatal,omitempty"`
 	Layers   []LayerResult `json:"layers"`
 }
 
@@ -201,7 +202,7 @@ func Run(ctx context.Context, code string, opts Options) *SupplierRun {
 		run.add("routing", StatusSkip, "映射层失败", nil)
 		return run
 	}
-	canonical, cerr := LoadCanonicalVariants(opts.CanonicalDB)
+	canonical, cerr := coverage.LoadCanonical(opts.CanonicalDB)
 	if cerr != nil {
 		run.add("mapping", StatusFail, "读规范库失败: "+cerr.Error(), nil)
 		run.add("routing", StatusSkip, "映射层失败", nil)
@@ -210,19 +211,25 @@ func Run(ctx context.Context, code string, opts Options) *SupplierRun {
 	matched := map[string][]string{}
 	gaps := []any{}
 	for _, sv := range result.Variants {
+		// 覆盖判定走库里的 fn_variant_covered —— 这条规则只有一份实现。
+		verdicts, verr := coverage.Judge(opts.CanonicalDB, coverage.JSON(sv.Coverage), canonical)
+		if verr != nil {
+			run.add("mapping", StatusFail, "判定覆盖失败: "+verr.Error(), nil)
+			run.add("routing", StatusSkip, "映射层失败", nil)
+			return run
+		}
 		var hits []string
-		for _, c := range canonical {
-			if normalize.Covers(sv.Coverage, c) {
-				hits = append(hits, c.Key)
+		for _, v := range verdicts {
+			if v.CanFulfil {
+				hits = append(hits, v.Key)
 			}
 		}
 		matched[sv.ExternalID] = hits
 		if len(hits) == 0 {
 			near := []string{}
-			for _, c := range canonical {
-				g := normalize.CoverageGaps(sv.Coverage, c)
-				if len(g) == 1 {
-					near = append(near, fmt.Sprintf("%s(%s)", c.Key, g[0]))
+			for _, v := range verdicts {
+				if len(v.Gaps) == 1 {
+					near = append(near, fmt.Sprintf("%s(%s)", v.Key, v.Gaps[0]))
 				}
 				if len(near) >= 3 {
 					break
@@ -434,39 +441,13 @@ func asList(v any) []any {
 // ---------------------------------------------------------------- 规范库
 
 // LoadCanonicalVariants 读规范变体（audience + axes），供覆盖语义匹配使用。
-func LoadCanonicalVariants(db *store.DB) ([]normalize.Canonical, error) {
-	if db == nil {
-		return nil, nil
-	}
-	rows, err := db.Rows("SELECT variant_key, ticket_type_code, axes::text FROM v_product_variant_matrix " +
-		"WHERE status='active' ORDER BY sort_order;")
-	if err != nil {
-		return nil, err
-	}
-	var out []normalize.Canonical
-	for _, r := range rows {
-		c := normalize.Canonical{Key: r["variant_key"], Audience: r["ticket_type_code"], Axes: map[string]string{}}
-		var axes []struct {
-			Axis   string `json:"axis"`
-			Option string `json:"option"`
-		}
-		if err := json.Unmarshal([]byte(r["axes"]), &axes); err == nil {
-			for _, a := range axes {
-				c.Axes[a.Axis] = a.Option
-			}
-		}
-		out = append(out, c)
-	}
-	return out, nil
-}
-
 // Route 是一个路由候选。
 type Route struct {
-	Supplier     string  `json:"supplier"`
+	Supplier      string `json:"supplier"`
 	SourceVariant string `json:"source_variant"`
-	NetPrice     string  `json:"net_price"`
-	RouteRank    string  `json:"route_rank"`
-	PriceLocked  bool    `json:"price_locked"`
+	NetPrice      string `json:"net_price"`
+	RouteRank     string `json:"route_rank"`
+	PriceLocked   bool   `json:"price_locked"`
 }
 
 // RoutingCandidates 查变体的路由候选。

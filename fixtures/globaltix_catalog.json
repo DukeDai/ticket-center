@@ -96,7 +96,7 @@
     },
     {
       "_comment": "大阪环球影城门票 + 快速券家庭套餐（2大1小）—— GlobalTix 官方示例的组合表达式",
-      "ourVariantKey": "adult:1d:studio_only:express",
+      "ourVariantKey": "family:2adult:1child",
       "mappingId": "80041201-8004120101|2+80041201-8004120102|2+80041902-8004190201|1+80041902-8004190202|1"
     }
   ]

@@ -32,8 +32,19 @@
         { "key": "child:1d:studio_snw",          "title": "儿童票 · 一日 · 园区通票",     "ticket_type": "child",  "axes": { "pass_type": "1d", "park_scope": "studio_snw" } },
         { "key": "adult:2d:studio_only",         "title": "成人票 · 双日 · 工作室之旅",   "ticket_type": "adult",  "axes": { "pass_type": "2d", "park_scope": "studio_only" } },
         { "key": "child:2d:studio_only",         "title": "儿童票 · 双日 · 工作室之旅",   "ticket_type": "child",  "axes": { "pass_type": "2d", "park_scope": "studio_only" } },
-        { "key": "adult:1d:studio_only:express", "title": "成人票+快速通行证 · 一日",    "ticket_type": "adult",  "axes": { "pass_type": "1d", "park_scope": "studio_only", "addon_type": "express" },
-          "_comment": "家庭套餐：门票 + 快速通行证 —— 当前模型只能拆成两条明细，源侧却是一个 SKU" }
+        { "key": "adult:1d:studio_only:express", "title": "成人票+快速通行证 · 一日",    "ticket_type": "adult",  "axes": { "pass_type": "1d", "park_scope": "studio_only", "addon_type": "express" } },
+        {
+          "key": "family:2adult:1child",
+          "title": "家庭套餐 · 2 大 1 小（含快速通行证）",
+          "variant_role": "combo",
+          "_comment": "组合套餐（方向 B）：规范侧声明组件与数量，源侧配方逐项对得上。组件暂时只能是一层，不能再是组合。",
+          "components": [
+            { "variant": "adult:1d:studio_only",  "quantity": 2 },
+            { "variant": "adult:express",        "quantity": 2 },
+            { "variant": "child:1d:studio_only", "quantity": 1 },
+            { "variant": "child:express",        "quantity": 1 }
+          ]
+        }
       ]
     },
     {

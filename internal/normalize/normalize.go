@@ -27,17 +27,17 @@ type Rules struct {
 
 // SourceRules 单个源的归一化规则。
 type SourceRules struct {
-	SupplierCode       string      `json:"supplier_code"`
-	SupplierName       string      `json:"supplier_name"`
-	Currency           string      `json:"currency"`
-	DefaultDate        string      `json:"default_date"`
-	Fixture            string      `json:"fixture"`
-	Documents          Documents   `json:"documents"`
-	Product            ProductRef  `json:"product"`
-	Packages           *Packages   `json:"packages"`
-	Products           *Products   `json:"products"`
-	Skus               *Skus       `json:"skus"`
-	MappingExpression  *Expression `json:"mapping_expression"`
+	SupplierCode      string      `json:"supplier_code"`
+	SupplierName      string      `json:"supplier_name"`
+	Currency          string      `json:"currency"`
+	DefaultDate       string      `json:"default_date"`
+	Fixture           string      `json:"fixture"`
+	Documents         Documents   `json:"documents"`
+	Product           ProductRef  `json:"product"`
+	Packages          *Packages   `json:"packages"`
+	Products          *Products   `json:"products"`
+	Skus              *Skus       `json:"skus"`
+	MappingExpression *Expression `json:"mapping_expression"`
 }
 
 // Documents 报文文档在 payload 里的位置。
@@ -76,12 +76,12 @@ type Packages struct {
 
 // Resources 套餐下的资源（= 源侧可售单元）。
 type Resources struct {
-	Path         string            `json:"path"`
-	IDPath       string            `json:"id_path"`
-	NamePath     string            `json:"name_path"`
-	AudiencePath string            `json:"audience_path"`
-	AudienceMap  map[string]string `json:"audience_map"`
-	Axes         []AxisRule        `json:"axes"`
+	Path         string              `json:"path"`
+	IDPath       string              `json:"id_path"`
+	NamePath     string              `json:"name_path"`
+	AudiencePath string              `json:"audience_path"`
+	AudienceMap  map[string]string   `json:"audience_map"`
+	Axes         []AxisRule          `json:"axes"`
 	Flags        map[string]FlagRule `json:"flags"`
 }
 
@@ -105,12 +105,16 @@ type Skus struct {
 
 // Expression 组合映射表达式规则（GlobalTix 的 A|2+B|1）。
 type Expression struct {
-	Path          string `json:"path"`
+	Path           string `json:"path"`
 	OurVariantPath string `json:"our_variant_path"`
-	MappingIDPath string `json:"mapping_id_path"`
+	MappingIDPath  string `json:"mapping_id_path"`
 }
 
 // Coverage 覆盖语义声明。
+//
+// 注意：这份声明**怎么判定**（能不能装出某个规范变体）不住在这里 ——
+// 规则在库里的 fn_variant_covered，读法在 internal/coverage。
+// 这里只负责把源侧报文里的覆盖声明抽出来。
 type Coverage struct {
 	Axes     map[string][]string `json:"axes"`
 	Excludes []string            `json:"excludes"`
@@ -138,41 +142,34 @@ type PriceRow struct {
 
 // Product 一个源商品的归一化结果。
 type Product struct {
-	ExternalID string               `json:"external_id"`
-	Name       string               `json:"name"`
-	Raw        map[string]any       `json:"raw"`
-	Variants   []Variant            `json:"variants"`
+	ExternalID string                `json:"external_id"`
+	Name       string                `json:"name"`
+	Raw        map[string]any        `json:"raw"`
+	Variants   []Variant             `json:"variants"`
 	Prices     map[string][]PriceRow `json:"prices"`
 }
 
 // CompositeExpression 组合映射表达式（一个可售单元由多个源 SKU 组成）。
 type CompositeExpression struct {
-	OurVariant  string          `json:"our_variant"`
-	MappingID   string          `json:"mapping_id"`
+	OurVariant  string           `json:"our_variant"`
+	MappingID   string           `json:"mapping_id"`
 	Parts       []ExpressionPart `json:"parts"`
-	IsComposite bool            `json:"is_composite"`
+	IsComposite bool             `json:"is_composite"`
 }
 
 // ExpressionPart 组合表达式的一段。
 type ExpressionPart struct {
-	SKU  string `json:"sku_id"`
-	Qty  int    `json:"qty"`
+	SKU string `json:"sku_id"`
+	Qty int    `json:"qty"`
 }
 
 // Result 一个源的整体归一化结果。
 type Result struct {
-	SupplierCode        string                `json:"supplier_code"`
-	Products            []Product             `json:"products"`
-	Variants            []Variant             `json:"variants"`
-	Prices              []PriceRow            `json:"prices"`
+	SupplierCode         string                `json:"supplier_code"`
+	Products             []Product             `json:"products"`
+	Variants             []Variant             `json:"variants"`
+	Prices               []PriceRow            `json:"prices"`
 	CompositeExpressions []CompositeExpression `json:"composite_expressions"`
-}
-
-// Canonical 规范变体（匹配的另一侧）。
-type Canonical struct {
-	Key      string            `json:"key"`
-	Audience string            `json:"audience"`
-	Axes     map[string]string `json:"axes"`
 }
 
 // LoadRules 读取规则文件。
@@ -208,54 +205,6 @@ func Dig(obj map[string]any, path string) any {
 		}
 	}
 	return cur
-}
-
-// Covers 判断源变体的覆盖声明是否覆盖规范变体。
-func Covers(cov Coverage, c Canonical) bool {
-	for _, req := range requiredAxes(c) {
-		if !contains(cov.Axes[req.Axis], req.Opt) {
-			return false
-		}
-		if contains(cov.Excludes, req.Opt) {
-			return false
-		}
-	}
-	return true
-}
-
-// CoverageGaps 列出覆盖缺口（诊断用，不用于判定）。
-func CoverageGaps(cov Coverage, c Canonical) []string {
-	var gaps []string
-	for _, req := range requiredAxes(c) {
-		if !contains(cov.Axes[req.Axis], req.Opt) {
-			gaps = append(gaps, req.Axis+":"+req.Opt)
-		} else if contains(cov.Excludes, req.Opt) {
-			gaps = append(gaps, req.Axis+":"+req.Opt+"(excluded)")
-		}
-	}
-	sort.Strings(gaps)
-	return gaps
-}
-
-type axisReq struct {
-	Axis string
-	Opt  string
-}
-
-func requiredAxes(c Canonical) []axisReq {
-	var out []axisReq
-	if c.Audience != "" {
-		out = append(out, axisReq{"audience", c.Audience})
-	}
-	axes := make([]string, 0, len(c.Axes))
-	for a := range c.Axes {
-		axes = append(axes, a)
-	}
-	sort.Strings(axes)
-	for _, a := range axes {
-		out = append(out, axisReq{a, c.Axes[a]})
-	}
-	return out
 }
 
 // UnionCoverage 求多个覆盖声明的并集（组合履约用）。
@@ -536,22 +485,22 @@ func priceRows(res map[string]any, rule *SourceRules) []PriceRow {
 				continue
 			}
 			out = append(out, PriceRow{
-				Date:       firstNonEmpty(toString(d["date"]), rule.DefaultDate),
-				SalePrice:  toFloat(d["salePrice"]),
-				NetPrice:   toFloat(d["netPrice"]),
-				Currency:   firstNonEmpty(toString(d["currency"]), toString(res["currency"]), rule.Currency),
-				Stock:      toInt(d["stock"]),
+				Date:      firstNonEmpty(toString(d["date"]), rule.DefaultDate),
+				SalePrice: toFloat(d["salePrice"]),
+				NetPrice:  toFloat(d["netPrice"]),
+				Currency:  firstNonEmpty(toString(d["currency"]), toString(res["currency"]), rule.Currency),
+				Stock:     toInt(d["stock"]),
 			})
 		}
 		return out
 	}
 	if res["salePrice"] != nil || res["netPrice"] != nil {
 		out = append(out, PriceRow{
-			Date:       firstNonEmpty(toString(res["date"]), rule.DefaultDate),
-			SalePrice:  toFloat(res["salePrice"]),
-			NetPrice:   toFloat(res["netPrice"]),
-			Currency:   firstNonEmpty(toString(res["currency"]), rule.Currency),
-			Stock:      toInt(res["stock"]),
+			Date:      firstNonEmpty(toString(res["date"]), rule.DefaultDate),
+			SalePrice: toFloat(res["salePrice"]),
+			NetPrice:  toFloat(res["netPrice"]),
+			Currency:  firstNonEmpty(toString(res["currency"]), rule.Currency),
+			Stock:     toInt(res["stock"]),
 		})
 	}
 	return out

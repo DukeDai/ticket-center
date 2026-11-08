@@ -73,7 +73,7 @@ type Options struct {
 	// RequireCredentials=false 时允许缺凭证构造（用于跑不需要凭证的检查）。
 	RequireCredentials bool
 	// Archive / Idempotency 开关。
-	Archive    bool
+	Archive     bool
 	Idempotency bool
 	// EndpointOverride 覆盖某环境的端点表（mock 模式用）。
 	EndpointOverride map[string]map[string]string

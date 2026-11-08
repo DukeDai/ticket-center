@@ -59,11 +59,11 @@ type Classifier func(resp *Response) *apperr.Error
 
 // Request 一次请求的描述。
 type Request struct {
-	Method  string
-	URL     string
-	Query   url.Values
-	Body    any
-	Headers map[string]string
+	Method   string
+	URL      string
+	Query    url.Values
+	Body     any
+	Headers  map[string]string
 	Classify Classifier
 	// SupplierCode 写进错误，便于定位是哪个源。
 	SupplierCode string
@@ -73,11 +73,11 @@ type Request struct {
 
 // Client 带重试与退避的 HTTP 客户端。
 type Client struct {
-	HTTP         *http.Client
-	MaxAttempts  int
-	BackoffBase  time.Duration
-	BackoffCap   time.Duration
-	UserAgent    string
+	HTTP        *http.Client
+	MaxAttempts int
+	BackoffBase time.Duration
+	BackoffCap  time.Duration
+	UserAgent   string
 	// Sleep 可注入，便于测试断言退避行为。
 	Sleep func(time.Duration)
 	// Rand 用于抖动，避免多实例同时重试。
@@ -87,13 +87,13 @@ type Client struct {
 // NewClient 构造默认客户端。
 func NewClient() *Client {
 	return &Client{
-		HTTP:         &http.Client{Timeout: 20 * time.Second},
-		MaxAttempts:  3,
-		BackoffBase:  time.Second,
-		BackoffCap:   30 * time.Second,
-		UserAgent:    "ticket-center-adapter/1.0",
-		Sleep:        time.Sleep,
-		Rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
+		HTTP:        &http.Client{Timeout: 20 * time.Second},
+		MaxAttempts: 3,
+		BackoffBase: time.Second,
+		BackoffCap:  30 * time.Second,
+		UserAgent:   "ticket-center-adapter/1.0",
+		Sleep:       time.Sleep,
+		Rand:        rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 

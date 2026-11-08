@@ -52,15 +52,15 @@ func (a *Adapter) Confirmed() bool { return a.Base.Cfg.Confirmed }
 // Describe 自述。
 func (a *Adapter) Describe() map[string]any {
 	return map[string]any{
-		"supplier_code":           a.Code(),
-		"protocol":                a.Protocol(),
-		"confirmed":               a.Confirmed(),
-		"env":                     a.Env,
-		"confirmed_facts":         a.Cfg.ConfirmedFacts,
-		"need_from_business":      a.Cfg.NeedFromBusiness,
+		"supplier_code":            a.Code(),
+		"protocol":                 a.Protocol(),
+		"confirmed":                a.Confirmed(),
+		"env":                      a.Env,
+		"confirmed_facts":          a.Cfg.ConfirmedFacts,
+		"need_from_business":       a.Cfg.NeedFromBusiness,
 		"mapping_expression_forms": MappingExpressionForms,
-		"credentials":             a.Creds.Describe(),
-		"missing_credentials":     a.Base.MissingCredentials(),
+		"credentials":              a.Creds.Describe(),
+		"missing_credentials":      a.Base.MissingCredentials(),
 	}
 }
 

@@ -21,35 +21,35 @@ type File struct {
 
 // Source 单个源的配置。
 type Source struct {
-	Status          string                      `json:"status"`
-	Confirmed       bool                        `json:"confirmed"`
-	Protocol        string                      `json:"protocol"`
-	ProtocolNote    string                      `json:"protocol_note"`
-	Direction       string                      `json:"direction"`
-	Endpoints       Endpoints                   `json:"endpoints"`
-	Credentials     map[string]credential.Spec  `json:"credentials"`
-	Token           TokenSpec                   `json:"token"`
-	Interfaces      map[string]Interface      `json:"interfaces"`
-	Probes          Probes                     `json:"probes"`
-	ErrorCodes      map[string]string           `json:"error_codes"`
-	ErrorLabels     map[string]string           `json:"error_labels"`
-	IdempotentCodes []string                    `json:"idempotent_codes"`
-	AuthErrorCodes  map[string]string           `json:"auth_error_codes"`
+	Status           string                     `json:"status"`
+	Confirmed        bool                       `json:"confirmed"`
+	Protocol         string                     `json:"protocol"`
+	ProtocolNote     string                     `json:"protocol_note"`
+	Direction        string                     `json:"direction"`
+	Endpoints        Endpoints                  `json:"endpoints"`
+	Credentials      map[string]credential.Spec `json:"credentials"`
+	Token            TokenSpec                  `json:"token"`
+	Interfaces       map[string]Interface       `json:"interfaces"`
+	Probes           Probes                     `json:"probes"`
+	ErrorCodes       map[string]string          `json:"error_codes"`
+	ErrorLabels      map[string]string          `json:"error_labels"`
+	IdempotentCodes  []string                   `json:"idempotent_codes"`
+	AuthErrorCodes   map[string]string          `json:"auth_error_codes"`
 	RefreshableCodes []string                   `json:"refreshable_codes"`
-	ConfirmedFacts  map[string]string           `json:"confirmed_facts"`
+	ConfirmedFacts   map[string]string          `json:"confirmed_facts"`
 	NeedFromBusiness []string                   `json:"need_from_business"`
-	Auth            AuthSpec                    `json:"auth"`
+	Auth             AuthSpec                   `json:"auth"`
 }
 
 // TokenSpec 令牌相关字段名与有效期口径。
 type TokenSpec struct {
-	AccessField   string `json:"access_field"`
-	RefreshField  string `json:"refresh_field"`
-	ExpiresField  string `json:"expires_field"`
-	ExpiresUnit   string `json:"expires_unit"`
-	SkewSeconds   int    `json:"skew_seconds"`
-	ErrCodeField  string `json:"err_code_field"`
-	ErrMsgField   string `json:"err_msg_field"`
+	AccessField  string `json:"access_field"`
+	RefreshField string `json:"refresh_field"`
+	ExpiresField string `json:"expires_field"`
+	ExpiresUnit  string `json:"expires_unit"`
+	SkewSeconds  int    `json:"skew_seconds"`
+	ErrCodeField string `json:"err_code_field"`
+	ErrMsgField  string `json:"err_msg_field"`
 }
 
 // AuthSpec 认证形态描述。
@@ -60,11 +60,11 @@ type AuthSpec struct {
 
 // Interface 一个业务接口的描述。
 type Interface struct {
-	Section       string `json:"section"`
-	Summary       string `json:"summary"`
-	ICodeProd     string `json:"icode_prod"`
-	ICodeSandbox  string `json:"icode_sandbox"`
-	Note          string `json:"note"`
+	Section          string `json:"section"`
+	Summary          string `json:"summary"`
+	ICodeProd        string `json:"icode_prod"`
+	ICodeSandbox     string `json:"icode_sandbox"`
+	Note             string `json:"note"`
 	IdempotencyField string `json:"idempotency_field"`
 }
 

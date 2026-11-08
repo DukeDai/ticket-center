@@ -62,7 +62,7 @@ var entityTypes = map[string]string{
 	OpListProducts: "product", OpGetProduct: "product", OpGetPoi: "product",
 	OpListAllProducts: "product", OpListAllPois: "product",
 	OpGetPriceCalendar: "price",
-	OpGetCategories: "product", OpGetLocations: "product",
+	OpGetCategories:    "product", OpGetLocations: "product",
 	OpGetCurrencies: "product", OpGetLocales: "product",
 	OpBookingVerify: "booking", OpBookingReqInfo: "booking",
 	OpCreateBooking: "booking", OpBookingStatus: "booking",
@@ -115,15 +115,15 @@ func (a *Adapter) Confirmed() bool { return a.Base.Cfg.Confirmed }
 func (a *Adapter) Describe() map[string]any {
 	missing := a.Base.MissingCredentials()
 	return map[string]any{
-		"supplier_code":         a.Code(),
-		"protocol":              a.Protocol(),
-		"confirmed":             a.Confirmed(),
-		"env":                   a.Env,
-		"interfaces_total":      len(a.Cfg.Interfaces),
+		"supplier_code":            a.Code(),
+		"protocol":                 a.Protocol(),
+		"confirmed":                a.Confirmed(),
+		"env":                      a.Env,
+		"interfaces_total":         len(a.Cfg.Interfaces),
 		"interfaces_missing_icode": a.Cfg.MissingICode(a.Env),
-		"endpoints":             a.Base.Endpoints(),
-		"credentials":           a.Creds.Describe(),
-		"missing_credentials":   missing,
+		"endpoints":                a.Base.Endpoints(),
+		"credentials":              a.Creds.Describe(),
+		"missing_credentials":      missing,
 	}
 }
 
@@ -536,7 +536,7 @@ func (a *Adapter) CreateBooking(ctx context.Context, request map[string]any, ide
 	}
 	if idempotencyKey == "" {
 		return nil, &apperr.Error{Class: apperr.ClassFatal, Code: "NO_IDEMPOTENCY_KEY",
-			Message: "创建订单必须提供 distributorOrderID（= 我们的 booking.idempotency_key）",
+			Message:      "创建订单必须提供 distributorOrderID（= 我们的 booking.idempotency_key）",
 			SupplierCode: a.Code()}
 	}
 	body["distributorOrderID"] = idempotencyKey

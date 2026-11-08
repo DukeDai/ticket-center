@@ -11,6 +11,7 @@ import (
 
 	"ticket-center/internal/apperr"
 	"ticket-center/internal/config"
+	"ticket-center/internal/coverage"
 	"ticket-center/internal/mock"
 	"ticket-center/internal/normalize"
 	"ticket-center/internal/registry"
@@ -91,10 +92,10 @@ func OfflineChecks(cfg *config.File, rules *normalize.Rules, fixturesDir string)
 
 	// O4 脱敏：凭证绝不能进归档/日志
 	blob := map[string]any{
-		"token": "SECRET-TOKEN",
+		"token":  "SECRET-TOKEN",
 		"nested": map[string]any{"api_key": "SECRET-KEY"},
-		"safe":  "visible",
-		"list":  []any{map[string]any{"password": "SECRET-PW"}},
+		"safe":   "visible",
+		"list":   []any{map[string]any{"password": "SECRET-PW"}},
 	}
 	masked := transport.RedactMap(blob)
 	nested, _ := masked["nested"].(map[string]any)
@@ -281,16 +282,23 @@ func MockProtocolChecks(ctx context.Context, cfg *config.File, rules *normalize.
 					if err != nil {
 						checks = append(checks, Check{"M8 归一化→映射→路由", StatusFail, err.Error()})
 					} else {
-						canonical, cerr := LoadCanonicalVariants(canonicalDB)
+						canonical, cerr := coverage.LoadCanonical(canonicalDB)
 						if cerr != nil {
 							checks = append(checks, Check{"M8 归一化→映射→路由", StatusFail,
 								"读规范库失败: " + cerr.Error()})
 						} else {
 							hitKeys := []string{}
 							for _, sv := range result.Variants {
-								for _, cv := range canonical {
-									if normalize.Covers(sv.Coverage, cv) {
-										hitKeys = append(hitKeys, cv.Key)
+								// 覆盖判定走库里的 fn_variant_covered —— 这条规则只有一份实现。
+								verdicts, verr := coverage.Judge(canonicalDB, coverage.JSON(sv.Coverage), canonical)
+								if verr != nil {
+									checks = append(checks, Check{"M8 归一化→映射→路由", StatusFail,
+										"判定覆盖失败: " + verr.Error()})
+									continue
+								}
+								for _, v := range verdicts {
+									if v.CanFulfil {
+										hitKeys = append(hitKeys, v.Key)
 									}
 								}
 							}
@@ -335,7 +343,7 @@ func MockProtocolChecks(ctx context.Context, cfg *config.File, rules *normalize.
 	body := map[string]any{
 		"basicOrder": map[string]any{"productID": 21081935, "poiID": 1,
 			"amount": 558.0, "packageID": 810001, "orderResourceList": []any{}},
-		"contact":    map[string]any{"name": "测试", "mobile": map[string]any{"mobileNumber": "13800000000"}},
+		"contact":       map[string]any{"name": "测试", "mobile": map[string]any{"mobileNumber": "13800000000"}},
 		"passengerList": []any{}, "currency": "CNY", "locale": "zh-CN",
 	}
 	if _, err := adapter.CreateBooking(ctx, body, key); err != nil {

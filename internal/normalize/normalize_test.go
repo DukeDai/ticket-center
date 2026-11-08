@@ -16,41 +16,6 @@ func rulesPath(t *testing.T) string {
 	return p
 }
 
-func TestCovers(t *testing.T) {
-	cov := Coverage{Axes: map[string][]string{
-		"audience":   {"adult"},
-		"pass_type":  {"1d"},
-		"park_scope": {"studio_only"},
-	}}
-	yes := Canonical{Key: "a", Audience: "adult", Axes: map[string]string{"pass_type": "1d", "park_scope": "studio_only"}}
-	noAudience := Canonical{Key: "b", Audience: "child", Axes: map[string]string{"pass_type": "1d", "park_scope": "studio_only"}}
-	noAxis := Canonical{Key: "c", Audience: "adult", Axes: map[string]string{"pass_type": "2d"}}
-
-	if !Covers(cov, yes) {
-		t.Error("应覆盖")
-	}
-	if Covers(cov, noAudience) {
-		t.Error("人群不匹配不应覆盖")
-	}
-	if Covers(cov, noAxis) {
-		t.Error("轴取值不匹配不应覆盖")
-	}
-}
-
-func TestCoversRespectsExcludes(t *testing.T) {
-	cov := Coverage{Axes: map[string][]string{"audience": {"adult", "child"}}, Excludes: []string{"child"}}
-	if !Covers(cov, Canonical{Key: "a", Audience: "adult"}) {
-		t.Error("adult 应被覆盖")
-	}
-	if Covers(cov, Canonical{Key: "b", Audience: "child"}) {
-		t.Error("excludes 里的取值不应被覆盖")
-	}
-	gaps := CoverageGaps(cov, Canonical{Key: "b", Audience: "child"})
-	if len(gaps) != 1 || gaps[0] != "audience:child(excluded)" {
-		t.Errorf("缺口诊断不对：%v", gaps)
-	}
-}
-
 func TestUnionCoverage(t *testing.T) {
 	a := Coverage{Axes: map[string][]string{"audience": {"adult"}, "pass_type": {"1d"}}}
 	b := Coverage{Axes: map[string][]string{"audience": {"child"}, "pass_type": {"1d"}}}

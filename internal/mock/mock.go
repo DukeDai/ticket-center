@@ -65,21 +65,21 @@ var testICodes = map[string]testICode{
 
 // Request 是一次收到的请求（用于断言）。
 type Request struct {
-	Path  string         `json:"path"`
+	Path  string            `json:"path"`
 	Query map[string]string `json:"query"`
-	Body  map[string]any `json:"body"`
+	Body  map[string]any    `json:"body"`
 }
 
 // State 是 mock 的可变状态。
 type State struct {
-	mu               sync.Mutex
-	accessToken      string
-	refreshToken     string
-	calls            map[string]int
-	requests         []Request
-	tokenRequests    int
-	refreshRequests  int
-	expireOnce       bool
+	mu              sync.Mutex
+	accessToken     string
+	refreshToken    string
+	calls           map[string]int
+	requests        []Request
+	tokenRequests   int
+	refreshRequests int
+	expireOnce      bool
 }
 
 // Snapshot 返回状态副本。
@@ -142,8 +142,8 @@ func New(fixturePath string) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		state:   &State{accessToken: accessToken, refreshToken: refreshToken, calls: map[string]int{}},
-		fixture: fx,
+		state:    &State{accessToken: accessToken, refreshToken: refreshToken, calls: map[string]int{}},
+		fixture:  fx,
 		listener: ln,
 	}
 	s.server = &http.Server{Handler: http.HandlerFunc(s.handle)}

@@ -60,9 +60,9 @@ func (e *Error) Retryable() bool { return e.Class.Retryable() }
 
 // MissingCredential 描述一个缺失的凭证项。
 type MissingCredential struct {
-	Name           string `json:"name"`
-	Env            string `json:"env"`
-	AuthConfigKey  string `json:"auth_config_key"`
+	Name          string `json:"name"`
+	Env           string `json:"env"`
+	AuthConfigKey string `json:"auth_config_key"`
 }
 
 // MissingCredentials 凭证缺失：明确报出缺哪个环境变量，不猜、不硬编码。

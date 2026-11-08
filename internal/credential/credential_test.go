@@ -8,10 +8,10 @@ import (
 
 func spec() map[string]Spec {
 	return map[string]Spec{
-		"aid":  {Env: "TEST_AID", AuthConfigKey: "aid", Required: true},
-		"sid":  {Env: "TEST_SID", AuthConfigKey: "sid", Required: true},
-		"key":  {Env: "TEST_KEY", AuthConfigKey: "key", Required: true},
-		"opt":  {Env: "TEST_OPT", AuthConfigKey: "opt", Required: false},
+		"aid": {Env: "TEST_AID", AuthConfigKey: "aid", Required: true},
+		"sid": {Env: "TEST_SID", AuthConfigKey: "sid", Required: true},
+		"key": {Env: "TEST_KEY", AuthConfigKey: "key", Required: true},
+		"opt": {Env: "TEST_OPT", AuthConfigKey: "opt", Required: false},
 	}
 }
 
