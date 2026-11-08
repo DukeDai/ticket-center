@@ -390,10 +390,9 @@ GlobalTix 的 SKU 映射表达式给出了现成的做法：
 `80041201-8004120101|2+80041201-8004120102|1+80041902-8004190201|1+80041902-8004190202|1`
 —— 官方示例正是「**环球影城日本入园票 + 快速通行证家庭套餐（2 成人 + 1 儿童）**」，
 即**一个可售单元由 4 个源 SKU 组合而成**。
-我们当前的 `supplier_variant_mapping` 只支持「1 源变体 → N 规范变体」的覆盖映射，
-**缺「1 规范变体 ← 多源变体组合」的表达**，这类组合包暂时无法路由。
-→ 需要一张组合表（如 `supplier_variant_bundle`：规范变体 ← 源变体 + 数量），
-并让路由按组合评估成本与履约可行性。
+→ 组合表已落地：`supplier_variant_composition`（规范变体 ← 源变体 + 数量）+
+`product_variant_relation.quantity`（规范侧组件声明），
+路由与定价按组合评估成本与履约可行性（不变量 78-86）。
 （注意：携程侧同一组合是**一个 SKU**，所以携程没有这个问题 —— 这是**源之间能力不对等**，不是我们模型的错。）
 
 **⚠ 5. 同步作业没有增量游标**
@@ -434,6 +433,10 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 直接生成
 **纪律**：归一化规则全部来自 `mapping_rules.json`，**脚本里不出现任何按源分支的代码**
 （对应 AGENTS.md 硬约束 4：源的结构不许泄漏进核心域）。新接一个源 = 加一段配置。
 
+**归一化与组合映射都在 Go 侧**（`internal/normalize` / `internal/compose`，唯一实现）。
+演练器只调 `tc-connect normalize` 与 `tc-connect compose`，然后读结果 ——
+脚本里不再自带一份 Python 版覆盖判定或组合解析（两份实现必然分叉）。
+
 **报告五段**：① 源报文 → 源变体与覆盖声明 ② 覆盖语义匹配 ③ 变体级路由 ④ 当前模型表达不了的源侧结构 ⑤ 不变量自检。
 
 **前端 POC**：`scripts/poc/index.html`（单文件，数据内嵌，直接双击打开）展示五块内容：
@@ -441,8 +444,8 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 直接生成
 1. **规范变体矩阵** —— 商品 → 变体 → 轴取值 chips，并标出每个变体「N 源可履约」
 2. **覆盖语义匹配** —— 每个源变体 → 规范变体的映射 + `coverage.axes` 原文 + 判定
 3. **变体级路由** —— `route_rank` / 源净价 / 折算成本 / 对客售价 / 锁价标记
-4. **模型缺口** —— 组合表达式的原文与拆解
-5. **不变量自检** —— 38 条逐条绿/红
+4. **组合映射** —— 组合表达式解出来的配方（规范组件 ← 源 SKU / 两侧数量）与解不出的缺口
+5. **不变量自检** —— 94 条逐条绿/红
 
 顶部可按源（Trip.com / GlobalTix）筛选，统计卡片实时反映条目数。
 
@@ -456,7 +459,10 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 直接生成
 | 同一变体多源时，**售价只由采纳成本最低的源决定** | `adult:1d:studio_only` → globaltix 520 胜出、trip_com 545 备选 |
 | **锁价随采纳源变化** | `adult:1d:studio_snw` 只由 trip_com 供、该 resource 带 `isPrivatePrice` → 该行锁价；同一商品的其它变体采纳 globaltix → 未锁 |
 | **组合履约确实表达不了** | GlobalTix 的 `...|2+...|2+...|1+...|1`（门票+快速券家庭套餐 2大1小）= 4 个源 SKU 组成一个可售单元，单个 `supplier_variant` 无处安放 |
-| 演练库 **38 条不变量全 PASS** | 模型在真实报文结构下自洽 |
+| **组合现在能表达了**（2026-11-07 补上） | 同一份报文用 `tc-connect compose apply` 解析成 4 行配方（规范侧组件声明 + 源侧成分逐项对得上）；不变量 78-81 全 PASS |
+| **组合现在能卖了**（2026-11-07 补上） | 成本 = Σ 成分单价 × 数量（成分取自源侧配方，不重新选源）；预订按配方带整组源 SKU；出券按成分张数发。卖不了的时候 `v_combo_price_gap` 逐条列原因（成分缺价 / 场次不同 / 源不同 / 价格锁定 / 按团报价） |
+| **预订的单位是源 SKU**（2026-11-08 补上） | 参数化源里成人票与儿童票是**同一个**源 SKU（`ZWO-1D-BASE`，人群是购买时选的一档）。按成分建预订就是同一个源 SKU 订两次：源侧看到两张订单单，一条客户订单对两个源单号。改成一个源 SKU 一条预订，成分的拆分留在请求明细里 |
+| 演练库 **94 条不变量全 PASS** | 模型在真实报文结构下自洽 |
 | 同一商品同一供应商只能一个 primary 映射 | 演练撞出 `ux_map_single_primary` 约束 → 映射生成逻辑按 (商品, 源) 去重 |
 
 **演练暴露的两个额外规则**（都是落库时才撞到的，已写进脚本注释）：
@@ -644,19 +650,24 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 直接生成
 ### 9.1 目录
 
 ```
-cmd/tc-connect/              CLI：sources / layers / mock / normalize
+cmd/tc-connect/              CLI：sources / layers / mock / normalize / compose / price
 internal/
   apperr/                    错误四分类 + 缺失凭证 + 端点未确认
   credential/                凭证解析（环境变量优先 → supplier.auth_config）
   transport/                 HTTP 客户端：退避重试 / Retry-After / 脱敏
   config/                    传输层配置加载与校验
   normalize/                 归一化核心（配置驱动，无按源分支）—— **唯一实现**
+  pricing/                   定价入口（读 fn_price_variant 的结果，**不算钱**）
   store/                     DB 访问（psql 子进程）+ 报文归档 + 幂等
   supplier/tripcom/          Trip.com 分销侧适配器
   supplier/globaltix/        GlobalTix Supply API 适配器（端点待商务确认）
   supplier/pending/          接口细节未核实的源的占位适配器
   registry/                  supplier.code → 适配器
   layertest/                 分层测试引擎 + 离线自检 + 协议自检
+  inventory/                 库存：查可售 / 预占 / 放掉（只调库里的函数，不自己算可售数）
+  compose/                   组合映射：解析组合表达式 → 配方（核组件、核数量；覆盖判定走库里的 fn_variant_covered）
+  readmodel/                 C 端读模型：刷新 + 漂移检查 + 组合的售价行/日历格子同步（口径在库里的函数）
+  variant/                   异构差异读侧：对照表 / 源覆盖缺口 / C 端读视图（含组合的构成）
   mock/                      Trip.com 分销侧协议 mock（标准库 net/http）
 configs/api_config.json      传输层配置：端点 / 21 个 ICODE / 凭证口径 / 错误码映射
 configs/mapping_rules.json   映射规则配置（接入层与演练器共用）
@@ -667,6 +678,46 @@ fixtures/                    真实报文结构的样例
 
 **归一化只有一个实现**（`internal/normalize`）：Python 侧的演练器通过
 `tc-connect normalize` 消费它的输出，不再各写一份。
+
+**定价也只有一个实现**（`fn_price_variant`，SQL 函数）：`internal/pricing` 只负责读结果，
+Go 侧不做任何价格计算（标准库没有十进制类型，用 `float64` 接金额迟早差一分钱）。
+演练器也不再用 Python 算钱 —— 全部落到库里算。详见 `SPEC.md` §4.6。
+
+**选源也只有一个实现**（`fn_route_candidates`，SQL 函数）：路由视图与定价函数共用同一候选集与排序键，
+所以「定价采用的源」与「路由选中的源」永远一致（不变量 43）。
+
+**组合的售卖也只有一个实现**（`SPEC.md` §5.13，2026-11-07 落地）：
+成本 = Σ 成分单价 × 数量，成分从**源侧配方**取（不重新选源）；
+预订按配方带整组源 SKU；出券按成分应发的张数。
+接入层拿到组合订单时，**按配方里的成分去拼请求**，不自己决定订哪个源 SKU ——
+重新选源就出现「按 A 源的价格卖、按 B 源出票」。
+
+**预订的单位是源 SKU**（`SPEC.md` §5.6 第四条 / §5.13 第五条，2026-11-08 修订）：
+接入层向源侧下单时，**一个源 SKU 发一次请求**，不是每个成分发一次。
+理由是源卖的是 SKU —— 参数化源里成人票与儿童票是同一个源 SKU，
+按成分各发一次 = 同一个 SKU 订两次（源侧两张订单单，对账对不上）。
+成分的拆分放在请求体的 `components` 里（那是给源侧看的说明），不决定发几次请求。
+一条预订覆盖哪些成分由库里的 `fn_booking_components` 推出来，接入层不自己算。
+
+**组合映射也只有一个实现**（`internal/compose`，2026-11-07 落地）：
+源侧的组合表达式（`mappingId` 里用 `+` 与 `|` 表达「多个源 SKU 按数量组成一个可售单元」）
+解析成配方，核上规范侧的组件声明与数量。覆盖判定走库里的 `fn_variant_covered`，
+数量比选用 `math/big.Rat`（不用浮点），写库是幂等 upsert。
+演练器不再自带一份 Python 版组合解析 —— 两份实现必然分叉。
+
+**组合在 C 端也只有一个实现**（`SPEC.md` §5.14，2026-11-08 落地）：
+组合源侧没有商品条目，目录同步作业看不见它 —— 它的售价行与日历格子由配方推出来
+（`fn_sync_combo_calendar()`），构成进读模型（`c_variant_composition`）。
+`internal/readmodel.SyncCombos` 只调库里的函数，`internal/variant.CompositionRows` 只读视图。
+有效期终点 = 成分窗口的**并集**（不变量 89），人群只带**编码 + 份数 + 天数** ——
+「2 成人 + 1 儿童」那句话由前端按 locale 拼，接入层不拼展示文案。
+
+**可售数也只有一个实现**（`fn_available_qty` / `fn_reserve_qty`，SQL 函数，2026-11-07 落地）：
+`internal/inventory` 只读结果，Go 侧不减库存、不判断够不够。
+这一条对接入层尤其要紧 —— **源侧的库存口径各不相同**（`pull_sync` / `push` / 场次级 / 票种级），
+我们自己的账只有一份：对账口径写死在库里的 `fn_available_qty`，
+源差异由它统一吸收（取票种级快照 → 场次级快照 → 可用性缓存 → 不知道）。
+接入层拿到源库存后只负责落库，不负责解释它。
 
 ### 9.2 端口实现现状
 
@@ -754,7 +805,14 @@ make check                          # 提交前完整自检（vet + test + mock 
 ./bin/tc-connect layers --supplier trip_com --env prod
 ./bin/tc-connect layers --offline            # 完全不外呼
 ./bin/tc-connect normalize --source trip_com --fixture fixtures/trip_com_catalog.json
+./bin/tc-connect compose plan  --source globaltix --fixture fixtures/globaltix_catalog.json  # 组合配方解算（不写库）
+./bin/tc-connect compose apply --source globaltix --fixture fixtures/globaltix_catalog.json  # 落库
+./bin/tc-connect price --variant 11 --date 2026-11-18   # 某变体某天的对客价（走库里唯一实现）
+./bin/tc-connect price --reprice                          # 源成本/汇率变了 → 统一重算
 ```
+
+`price` 子命令的价值是「所有入口给出同一个价格」：演练器、接入层、运维排查走的都是这一条路。
+`--reprice` 重算后会列出没定上价的行（缺源报价 / 缺上架关系 / 缺汇率快照），有则非零退出。
 
 **分层结果示例（无凭证，2026-11-05 实测）**：
 

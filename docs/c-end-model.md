@@ -72,16 +72,22 @@ c_product_calendar (channel_id, product_id, date)
 这条对应 `v_c_readmodel_drift` 视图 —— 检测卡片起价与价格日历是否已经不一致，
 `drifted=true` 说明刷新作业漏跑了，可以直接接告警。
 
-实测（种子数据，7 张卡片）：
+实测（种子数据，9 张卡片）：
 
-| channel | product | card_from_price | truth_min_price | drifted |
-|---|---|---|---|---|
-| C2C | 1 | 95.00 | 95.00 | f |
-| B2B_HK | 1 | 88.00 | 88.00 | f |
-| C2C | 3 | 188.50 | 188.50 | f |
+| channel | product | locale | card_from_price | list_price | truth_min_price | drifted |
+|---|---|---|---|---|---|---|
+| C2C | 1 | zh-CN | 89.46 | 108.87 | 89.46 | f |
+| C2C | 1 | en-HK | 89.46 | 108.87 | 89.46 | f |
+| C2C | 3 | zh-CN | 188.96 | 218.63 | 188.96 | f |
+| C2C | 7 | zh-CN | 1200.00 | 1200.00 | 1200.00 | f |
+| B2B_HK | 1 | zh-HK | 92.04 | 107.87 | 92.04 | f |
 
-注意 B2B_HK 的起价 88.00 ≠ C2C 的 95.00 —— **同一商品在不同渠道的起价不同**，
+注意 B2B_HK 的起价 92.04 ≠ C2C 的 89.46 —— **同一商品在不同渠道的起价不同**，
 这正是 `channel` 存在的意义，也是 `price_calendar.channel_id` 唯一索引要带渠道维度的原因。
+
+卡片上的价格不是各写各的：它们是 `fn_price_variant` 算出来后落到 `price_calendar` 的，
+刷新作业（`fn_refresh_read_models()`）只是把最近 30 天的最小售价搬进卡片。
+漂移检测把「卡片价 ≠ 价格日历最小价」标出来。
 
 ### 2.2 展示内容（Marketing Content）—— 详情页渲染什么
 
@@ -129,9 +135,18 @@ cart (cart_no, channel_id, customer_id, status, expires_at)
 ```
 
 `inventory_hold` 是这组的核心：**购物车 ≠ 占了库存，但结算页必须占**。
-- `status`: `active` → `consumed`（下单成功）/ `released`（主动释放）/ `expired`（超时）
+- `status`: `active` → `consumed`（下单成功）/ `released`（主动释放）/ `expired`（超时）/ `voided`（卖出后收回：退款 / 取消 / 订单超时）
 - `expires_at` + 部分索引 `ix_hold_expiry ... WHERE status='active'`：定时作业扫过期释放
 - 断言 21 保证预占数量与购物数量一致；断言 22 保证活跃预占必须挂在某个购物车或订单上（不能凭空占库存）
+
+**预占的写路径与口径在 `db/migrations/009_inventory_hold.sql`**：
+`fn_hold_inventory`（幂等键 `hold_no`，同键异内容报错）建预占，
+`fn_available_qty` 是「还剩多少」的唯一实现，`fn_reserve_qty` 在锁内判断够不够。
+下单时 `fn_place_order` 消费匹配的购物车预占（`active → consumed`），
+没有就新建一条 `consumed` 的 —— **卖出多少是事实，必须查得到**。
+
+`released` 与 `voided` 分开是有意的：`released` = 占过但**从未卖出**，
+`voided` = **卖出后又被收回**。合成一个状态的话，退款与超卖的账永远算不清。
 
 购物车项存 `price_snapshot`：加购时的价格快照，结算时价格变了要提示用户重新确认，
 而不是静默按新价扣款。
@@ -170,7 +185,15 @@ checkout_requirement (product_id, ticket_type_id, channel_id,
 - `order_holder` = 下单时**采集的输入**（按 sequence 区分第几张票）
 - `voucher.holder_snapshot` = 出票时**固化的快照**（凭证上显示什么）
 
+快照不是出票时随手抄的：`fn_issue_voucher()`（`db/migrations/005_fulfillment.sql`）
+按 `order_holder` 的 sequence 把人一一对上票码，票码数与要发的张数对不上当场报错。
+「票发给谁」这件事只有一处实现，改它得同时改写路径和门禁。
+
 断言 25 保证「要求实名的票种，持票人数必须等于票数」—— 少填一个人的票是最常见的出票事故。
+
+C 端展示给用户的是**券号**（内部标识，对账与客服都用它），
+闸机前刷的是**票码**。源侧没给票码时我们生成一个 128 位随机码，
+不拿连号的券号顶上（`016` 收紧，不变量 94）—— 券号猜得到，票码必须猜不到。
 
 `checkout_requirement.channel_id` 可为 NULL（所有渠道通用）或指定渠道。
 种子数据里 P1 的实名要求只对 C2C 生效，B2B 分销商代客下单不需要 —— 这就是渠道维度的价值。
@@ -185,6 +208,13 @@ voucher_redemption.gate_id / .gate_operator_id                            ← �
 
 `voucher_redemption.operator_id`（TEXT）是**源侧**的操作员标识，与本地 `gate_operator` 并存不冲突：
 一个核销动作可能同时有本地核销员和源侧流水号。
+
+核销的**写路径**已经落地（2026-11-07）：扫一次票只走库里的 `fn_redeem_voucher()`
+（`db/migrations/008_redemption.sql`），Go 侧是 `internal/redemption`。
+口径：一次扫票一条记录（重复扫票记 `duplicate`，不覆盖事实）；
+一张券最多成功核销一次（唯一索引 `ux_redemption_single_success` 兜底）；
+过期 / 作废 / 未出票的券不认，但都要留记录写清原因。
+详见 [`SPEC.md` §5.8](SPEC.md)。
 
 ### 2.4 变体层：多维商品在 C 端怎么卖（2026-11-04 补充）
 
@@ -215,16 +245,18 @@ c_variant_calendar (channel_id, product_variant_id, date)
 **卡片起价不能把加购件算进去**：快速通行证 ¥398 不是「入场起价」。
 `v_c_readmodel_drift` 已排除 `variant_role='addon'` 的变体。
 
-实测（北京环球影城，C2C 渠道，2026-11-16）：
+实测（北京环球影城，C2C 渠道，2026-11-18）：
 
 | 变体 | 售价 | 可履约源数 |
 |---|---|---|
-| 成人 · 一日 · 单园区 | ¥585 | 2 |
-| 儿童 · 一日 · 单园区 | ¥495 | 2 |
-| 成人 · 一日 · 园区通票 | ¥645 | 2 |
-| 儿童 · 一日 · 园区通票 | ¥565 | **1**（只有 Zowoyoo） |
-| 成人 · 双日 · 单园区 | ¥985 | 2 |
-| 快速通行证（加购件） | ¥398 | 2 |
+| 成人 · 一日 · 单园区 | ¥585.80 | 2 |
+| 儿童 · 一日 · 单园区 | ¥484.88 | 2 |
+| 老年 · 一日 · 单园区 | ¥498.00（锁价） | 2 |
+| 成人 · 一日 · 园区通票 | ¥640.32 | 2 |
+| 儿童 · 一日 · 园区通票 | ¥559.12 | **1**（只有 Zowoyoo） |
+| 成人 · 双日 · 单园区 | ¥992.96 | 2 |
+| 儿童 · 双日 · 单园区 | ¥888.56 | **1**（只有 Zowoyoo） |
+| 快速通行证（加购件） | ¥392.08 | 2 |
 
 「可履约源数」这一列是给前端的关键信号：**只有 1 个源的组合没有备源，
 源一挂就变不可售**，前端应该在选择器上做提示。
@@ -247,12 +279,89 @@ c_variant_calendar (channel_id, product_variant_id, date)
 **锁价对 C 端无感**：价格保护是「采纳源」的属性，锁价行的售价已原样等于源方挂牌价，
 前端照常展示即可；区别只在平台不能自主加价。
 
+### 2.6 有效期在 C 端怎么展示（2026-11-07 补充）
+
+单日票与两日票的价格不一样、可用日期不一样，**有效期窗口也不一样**。
+C 端必须把这个差异显示出来，否则用户会按「当天有效」理解两日票，
+第二天拿着票到门口才发现进不去 —— 这是最贵的一种客诉。
+
+| 展示位 | 数据来源 | 说明 |
+|---|---|---|
+| 变体选择器 | `v_product_variant_matrix.axes`（含 `valid_days`） | 选项标签带上「1 日 / 2 日」 |
+| 变体日历 | `v_variant_validity` | 给出 `valid_from` / `valid_to` / `valid_days` |
+| 差异对照 | `v_variant_comparison` | 两个可售单元差在哪（人群 / 轴 / 有效期 / 退款口径 / 可用源） |
+| 下单后 | `voucher.valid_from` / `valid_to` | 用户看到的最终窗口，以券为准 |
+
+**有效期长度是轴选项上的数据**（`product_axis_option.valid_days`），
+唯一读法是库里的 `fn_variant_validity_days()`。
+前端不许自己「日期 + 1」—— 应用侧加一天和库里加一天，早晚有一天对不上。
+
+### 2.7 差异走到读模型（2026-11-07 补充，缺口已补上）
+
+上一节留的缺口已经补上：**C 端读模型现在带差异事实了**。
+
+| 展示位 | 数据来源 | 说明 |
+|---|---|---|
+| 变体行 | `v_c_variant_feed` | 人群 / 轴取值 / 有效天数 / 退款口径 + 本渠道价格区间与可售天数，一行一变体 |
+| 日历格子 | `c_variant_calendar.valid_to` | 有效期终点由库算好（格子日期 + 有效天数），前端不自己加一天 |
+| 事实表 | `c_variant_facts` | 读模型的底稿：渠道 × 可售单元 |
+
+三条口径：
+
+- **差异不许在请求链路里 join 出来。** 请求链路只读 `c_variant_facts` /
+  `c_variant_calendar`，不碰主数据（硬约束 10）。
+- **事实只写一份。** 每个字段都从 `v_variant_comparison` 取，不重算有效天数、不重算轴取值 ——
+  重算就是第二份实现。
+- **读模型不许与主数据分叉。** 不变量 76 逐字段比对，刷新作业漏跑当场报出来；
+  不变量 77 保证日历格子的有效期终点没被算错。
+
+### 2.8 组合套餐在 C 端怎么展示（2026-11-07 补充，2026-11-08 展示口径已定）
+
+异构融合的第二个方向（一个可售单元由多个源 SKU 按数量组成）现在有模型了：
+规范侧 `product_variant_relation` 声明组件与数量，源侧 `supplier_variant_composition` 给配方
+（不变量 78-81 守着两侧逐项对得上）。
+
+C 端要展示套餐，「里面有什么、各几个」这条事实住在组合变体上：
+
+| 展示位 | 数据来源 | 说明 |
+|---|---|---|
+| 组合行 | `v_c_variant_feed` | 组合变体与普通变体一样出现在变体行里，另带 `is_combo` / `combo_audience` / `component_count` / `composition` |
+| 组件清单 | `v_c_variant_composition` | C 端的成分明细：一行一个成分（份数 / 人群编码 / 各管几天） |
+| 配方对照 | `v_variant_composition` | 组合 / 组件 / 源 SKU / 源侧数量 vs 声明数量（B 端对账用） |
+| 差异对照 | `v_variant_comparison` | 组合与普通变体的差异（人群取并集、轴取值取并集） |
+
+**写路径已经接上组合了**（`SPEC.md` §5.13）：定价（成本 = Σ 成分单价 × 数量）、
+预订（按配方带整组源 SKU）、出券（一个成分发该成分应发的张数）、
+实名（`item_index` 指明属于哪一行）都做完了。
+
+**展示口径也定了**（`SPEC.md` §5.14，2026-11-08）：
+
+1. **组合的售价行与日历格子由配方推出来。** 组合源侧没有商品条目，
+   目录同步作业看不见它 —— 所以 `fn_sync_combo_calendar()` 按成分的售价行推出组合的售价行
+   （金额走定价函数的组合分支），再推出日历格子。
+   `tc-connect refresh` 先同步组合再刷新。
+2. **有效期终点 = 成分窗口的并集**（最长的那个）。
+   2 份两日成人 + 1 份一日儿童 = **2 天**；2 份一日成人 + 1 份一日儿童 = 1 天。
+   取最短就是第二天进不去，取相等多赔客户一天（不变量 89）。
+3. **人群不选标签，带编码。** 组合不带「家庭」标签，
+   带的是每个成分的人群编码 + 份数 + 各自的天数：
+   `[{adult, 2.00, 2}, {child, 1.00, 1}]`。
+   「2 成人 + 1 儿童」这句话由**前端按 locale 拼** ——
+   展示文案不进模型（硬约束 9：展示文案一律行级表 + `locale` 列）。
+
+所以组合现在与普通变体一样出现在日历上，只是组件清单多一段。
+`tc-connect variant composition --variant 18 --channel 1` 看它由谁组成。
+
+**成分明细是按渠道读的。** C 端读模型是按渠道建的：一个套餐上了两个渠道
+就有两份成分明细。不按渠道过滤，「2 份成人 + 1 份儿童」会被数成两遍 ——
+详情页显示 4 份成人，实际只发 2 份。
+
 ---
 
 ## 3. C 端的完整链路（对应种子的数据）
 
 ```
-① 浏览           v_c_listing_feed → 8 张卡片（C2C 6 商品 + 英文版 + B2B_HK）
+① 浏览           v_c_listing_feed → 9 张卡片（C2C 7 商品 + 英文版 + B2B_HK）
 ② 详情           v_c_product_detail → 亮点/须知/包含/标签/评价/地点 一次聚合
 ③ 选变体         v_product_variant_matrix → 人群/票种/园区范围/加购件 的组合选择器
 ④ 看日历         c_product_calendar + c_variant_calendar → 含 sold_out / closed 格子
@@ -266,6 +375,44 @@ c_variant_calendar (channel_id, product_variant_id, date)
 
 每一步都有对应的断言把住（21-26 与 27-34），不靠人工盯。
 
+### 卡片上的价格从哪来
+
+```
+源成本（supplier_price_calendar）
+   └─ 快照汇率折算 → 成本
+        └─ 定价函数 fn_price_variant（唯一实现）→ 售价 / 划线价 / 折扣
+             └─ price_calendar（落库）
+                  └─ 刷新作业 → c_product_card.from_price / list_price
+```
+
+四层各司其职，任何一层都不许自己算一遍：
+
+| 层 | 职责 | 谁负责刷新 |
+|---|---|---|
+| `supplier_price_calendar` | 源方原始报价（原币） | 接入层同步作业 |
+| `price_calendar` | 折算后的成本与对客售价（默认行基准币种，渠道专属行按该渠道结算币种） | `fn_reprice_rows()` |
+| `c_product_card` | 卡片起价与划线价（近 30 天最小价）+ 最近可售日 + 可售天数 | `fn_refresh_read_models()` |
+| `c_variant_calendar` | 变体当日的价格区间与可履约源数 | `fn_refresh_read_models()` |
+
+读模型刷新的口径写在库里的 `fn_refresh_read_models()`（`db/migrations/002_read_model_refresh.sql`），
+种子、演练器、接入层、定时作业都调它 —— **口径只有一份**。
+若刷新用的口径与漂移检测用的口径各写一份，刷新完还会被判成漂移，等于自己告自己。
+
+```bash
+tc-connect refresh              # 刷新读模型，并报告漂移
+tc-connect refresh --check      # 只查漂移（刷新作业漏跑时非零退出）
+```
+
+刻意不做：新建日历格子（格子该不该出现由上架与库存同步决定，不由定价决定）、
+以及刷新 `c_product_calendar`（商品级格子带票种价格与库存状态 `sold_out` / `closed`，
+由库存同步作业写，半更新比不更新更糟）。
+
+**划线价与折扣是定价函数给的，不是展示层编的**：
+`list_price = 售价 × (1 + list_markup_percent/100)`，`discount_pct` 由这两个数算出来。
+锁价行与按团报价行的划线价 = 售价（折扣 0）—— 平台不能为一个源方已定死的价伪造折扣。
+
+前端的义务只有一条：**折扣为 0 时不显示划线价**。
+
 ---
 
 ## 4. 刻意没做的部分
@@ -274,7 +421,7 @@ c_variant_calendar (channel_id, product_variant_id, date)
 |---|---|---|
 | 推荐算法 / 猜你喜欢 | 需要行为数据，当前无 | 有埋点后 |
 | 首页楼层 / 专题位 / Banner | 运营 CMS，另立上下文 | 做运营后台时 |
-| 组合套餐（bundle，含子项列表） | 用变体关系表 `product_variant_relation` 表达「基础票 ← 园区升级/快速通行证」，但**打包成一个不可拆的组合**还需要 bundle 子模型 | 出现必须整体售卖、不可拆售的组合票时 |
+| 组合套餐（bundle）进 C 端 | 写路径都接上了（§2.8：定价 / 预订 / 出券 / 实名按成分），但组合**没有 `price_calendar` 行**、有效期终点口径没定、人群标签没法用单个 `audience` 表达，所以还不在可售列表里 | 组合的售价日历 + 有效期终点 + 人群标签三条口径定下来之后 |
 | 拼团 / 秒杀 / 分销裂变 | 独立玩法，独立上下文 | 做活动时 |
 | 优惠券自动匹配引擎 | 现在是"用户选券"，不是"系统最优券" | 做转化优化时 |
 | 多币种展示 | 卡片带 `currency` 字段，但展示层换算策略未定 | C 端出海时 |
