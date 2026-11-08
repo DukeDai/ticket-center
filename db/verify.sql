@@ -113,7 +113,7 @@ ORDER BY p.product_code;
 
 \echo ''
 \echo '════════════════════════ E. 不变量断言（全部应 passed=t） ════════════════════════'
--- 断言来源：schema.sql 中的 v_invariant_checks 视图（26 条，单一事实来源）
+-- 断言来源：迁移文件里的 v_invariant_checks 视图（92 条，单一事实来源）
 SELECT seq, check_name, expected, actual, passed,
        CASE WHEN passed THEN 'PASS' ELSE 'FAIL' END AS result
 FROM v_invariant_checks
@@ -199,6 +199,22 @@ LEFT JOIN gate_operator go ON go.id = vr.gate_operator_id
 ORDER BY vr.id;
 
 \echo ''
+\echo '════════════════════════ G9. C端变体差异事实（差异走到读模型） ════════════════════════'
+-- 期望：两日票的 valid_days=2、axes 带 pass_type=2d；读模型带出了差异，前端不 join 主数据
+SELECT f.channel_id, f.variant_code, f.audience, f.axes, f.valid_days,
+       f.refundable, f.refund_fee_percent,
+       cal.price_min, cal.price_max, cal.available_days, cal.first_date, cal.last_date
+FROM v_c_variant_feed f
+JOIN LATERAL (
+    SELECT MIN(cvc.price_min) AS price_min, MAX(cvc.price_max) AS price_max,
+           COUNT(*) FILTER (WHERE cvc.status = 'available') AS available_days,
+           MIN(cvc.date) AS first_date, MAX(cvc.date) AS last_date
+      FROM c_variant_calendar cvc
+     WHERE cvc.channel_id = f.channel_id AND cvc.product_variant_id = f.product_variant_id
+) cal ON true
+ORDER BY f.channel_id, f.variant_code;
+
+\echo ''
 \echo '════════════════════════ H1. 变体矩阵（一个商品下到底有哪些可售组合） ════════════════════════'
 -- 期望：环球影城 8 个变体，人群 × 票种 × 园区范围三个维度；加购件单独成行
 SELECT variant_code, variant_role, ticket_type_code, axes, addon_count
@@ -266,6 +282,16 @@ SELECT pv.variant_code,
 FROM product_variant pv
 WHERE pv.product_id = 6 AND pv.variant_code IN ('USJ-ADULT-1D-STD','USJ-ADULT-1D-SNW')
 ORDER BY pv.variant_code;
+
+\echo ''
+\echo '════════════════════════ H8. 日历格子的有效期终点（前端不自己加一天） ════════════════════════'
+-- 期望：两日票的格子 valid_to = 格子日期 + 2；单日票 = 格子日期 + 1
+SELECT pv.variant_code, fn_variant_validity_days(pv.id) AS valid_days,
+       cvc.date, cvc.valid_to,
+       (cvc.valid_to = cvc.date + fn_variant_validity_days(pv.id)) AS valid_to_ok
+FROM c_variant_calendar cvc
+JOIN product_variant pv ON pv.id = cvc.product_variant_id
+ORDER BY pv.sort_order, cvc.date;
 
 
 \echo ''

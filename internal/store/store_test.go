@@ -1,9 +1,12 @@
-package store
+// 这是一个外部测试包（package store_test）：它要用 testdb 建一次性库，
+// 而 testdb 现在会走迁移引擎（它依赖 store），同包测试会形成导入环。
+package store_test
 
 import (
 	"strconv"
 	"testing"
 
+	"ticket-center/internal/store"
 	"ticket-center/internal/testdb"
 )
 
@@ -11,10 +14,10 @@ import (
 //
 // 以前这里连的是开发机上的 ticket_center，结果是「测试结果取决于开发机当时的数据状态」：
 // 数据被手工改过，测试就红；数据被清空，测试就空跑。现在每次都是干净的一次性库。
-func testDB(t *testing.T) *DB {
+func testDB(t *testing.T) *store.DB {
 	t.Helper()
 	name := testdb.New(t, testdb.Options{Seed: true})
-	return New(name)
+	return store.New(name)
 }
 
 func TestRowsParsesQuotedJSON(t *testing.T) {
@@ -42,7 +45,7 @@ func TestRowsParsesQuotedJSON(t *testing.T) {
 
 func TestSeedLeavesIdentitySequencesUsable(t *testing.T) {
 	// 种子数据用显式 id 插入，identity 序列必须同步推进。
-	// 序列落后时应用第一次 INSERT 就撞主键，而 38 条不变量一条都发现不了。
+	// 序列落后时应用第一次 INSERT 就撞主键，而不变量一条都发现不了。
 	db := testDB(t)
 
 	// 每个带 identity 序列的表，都要能发出一个不冲突的 id。
@@ -103,7 +106,7 @@ func TestQuote(t *testing.T) {
 		{"O'Brien", "'O''Brien'"},
 	}
 	for _, c := range cases {
-		if got := Quote(c.in); got != c.want {
+		if got := store.Quote(c.in); got != c.want {
 			t.Errorf("Quote(%v) = %s，期望 %s", c.in, got, c.want)
 		}
 	}

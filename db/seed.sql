@@ -66,12 +66,28 @@ INSERT INTO attribute_definition (id, code, name, data_type, unit, scope, is_fil
 
 -- -------------------------------------------------------------------------------------
 -- 3. 汇率快照（跨币种比价的前提）
+--
+-- 快照日期写死，不跟 current_date 走：
+--   - 种子数据必须是确定的，同样的输入每次跑出同样的成本，否则没法当回归基线；
+--   - 折算口径是「价格当日或之前最近的一份快照」（fn_fx_rate），
+--     写死日期后不管哪天重建，价格永远落在快照之后，口径稳定。
+--
+-- 每个币种给两份快照：2025-01-01 是老价，2026-01-01 是现价。
+-- 折算必须取「当日之前最近的那份」，也就是 2026-01-01。
+-- 如果哪天实现退化成「取最早的一份」，成本会立刻对不上 —— 这份种子就是拿来抓这种错的。
 -- -------------------------------------------------------------------------------------
+INSERT INTO app_setting (key, value, description) VALUES
+ ('base_currency', 'CNY', '跨币种比价的基准币种：所有成本先折算到这个币种才可比');
+
 INSERT INTO fx_rate (base_currency, quote_currency, rate, as_of_date, source) VALUES
- ('CNY','HKD',1.0833000, current_date, 'demo'),
- ('CNY','JPY',21.1500000, current_date, 'demo'),
- ('CNY','EUR',0.1290000, current_date, 'demo'),
- ('CNY','BRL',0.8300000, current_date, 'demo');
+ ('CNY','HKD',1.0950000, DATE '2025-01-01', 'demo'),
+ ('CNY','JPY',21.4000000, DATE '2025-01-01', 'demo'),
+ ('CNY','EUR',0.1310000, DATE '2025-01-01', 'demo'),
+ ('CNY','BRL',0.8600000, DATE '2025-01-01', 'demo'),
+ ('CNY','HKD',1.0833000, DATE '2026-01-01', 'demo'),
+ ('CNY','JPY',21.1500000, DATE '2026-01-01', 'demo'),
+ ('CNY','EUR',0.1290000, DATE '2026-01-01', 'demo'),
+ ('CNY','BRL',0.8300000, DATE '2026-01-01', 'demo');
 
 -- -------------------------------------------------------------------------------------
 -- 4. 规范商品（Catalog）
@@ -265,6 +281,11 @@ VALUES
  (4,5,2,1, current_date+6,'HKD',120.00,118.00,0,1,20,'available'),
  (3,3,4,1, current_date+6,'HKD',125.00,125.00,0,1,20,'available'),
  (5,7,NULL,1,current_date+6,'CNY',118.00,108.00,10,1,20,'available'),
+ -- 同一天也要有儿童票的源成本：售价日历给儿童票定了价，成本却找不到对应源行，
+ -- 那是凭空捏出来的成本。不变量 40 会当场抓出来。
+ (4,6,2,1, current_date+6,'HKD', 80.00, 78.00,0,1,20,'available'),
+ (3,4,4,1, current_date+6,'HKD', 85.00, 85.00,0,1,20,'available'),
+ (5,8,NULL,1,current_date+6,'CNY', 78.00, 70.00, 8,1,20,'available'),
  -- P2 东京：jtb JPY 2600 / globaltix JPY 2750
  (6,9,6,2, current_date+7,'JPY',2600.00,2600.00,0,1,10,'available'),
  (7,10,7,2,current_date+7,'JPY',2750.00,2750.00,0,1,10,'available'),
@@ -278,20 +299,24 @@ VALUES
  (8,11,10,5, current_date+10,'CNY',298.00,288.00,10,1,10,'available');
 
 -- -------------------------------------------------------------------------------------
--- 10. 对客售价日历（基准币种 CNY，成本取自最优源）
+-- 10. 对客售价日历（基准币种 CNY）
+--
+-- 这里只写「要卖哪一行」：商品 / 场次 / 票种 / 渠道 / 日期。
+-- 成本、售价、划线价一律由第 17 节的 fn_price_variant 算出来再回填 ——
+-- 售价数字不再手写。手写的意思是同一批源数据有三个地方给出三个价格。
 -- -------------------------------------------------------------------------------------
-INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, cost_price, cost_source_product_id, sell_price, list_price, discount_pct, rule, status, source)
+INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, status, source)
 VALUES
- (1,1,1,NULL, current_date+5,'CNY',108.00,5,138.00,168.00,17.86,'{"mode":"cost_plus","percent":27.8,"floor":100}','active','calc'),
- (1,1,2,NULL, current_date+5,'CNY', 70.00,5, 95.00,115.00,17.39,'{"mode":"cost_plus","percent":35.7,"floor":60}','active','calc'),
- (1,2,1,NULL, current_date+6,'CNY',108.00,5,138.00,168.00,17.86,'{"mode":"cost_plus","percent":27.8}','active','calc'),
- (1,2,2,NULL, current_date+6,'CNY', 70.00,5, 95.00,115.00,17.39,'{"mode":"cost_plus","percent":35.7}','active','calc'),
- (2,3,3,NULL, current_date+7,'CNY',122.93,6,168.00,198.00,15.15,'{"mode":"cost_plus","percent":36.6}','active','calc'),
- (2,3,4,NULL, current_date+7,'CNY', 94.56,6,118.00,138.00,14.49,'{"mode":"cost_plus","percent":31.1}','active','calc'),
- (3,4,5,NULL, current_date+8,'CNY',144.58,1,188.50,218.00,13.53,'{"mode":"cost_plus","percent":30.4}','active','calc'),
- (4,5,6,NULL, current_date+9,'CNY',139.53,2,189.50,215.00,11.86,'{"mode":"cost_plus","percent":35.8}','active','calc'),
- (5,6,7,NULL, current_date+10,'CNY',288.00,8,368.00,428.00,14.02,'{"mode":"cost_plus","percent":27.8}','active','calc'),
- (5,6,8,NULL, current_date+10,'CNY',180.00,8,238.00,268.00,11.19,'{"mode":"cost_plus","percent":32.2}','active','calc');
+ (1,1,1,NULL, current_date+5,'CNY','active','calc'),
+ (1,1,2,NULL, current_date+5,'CNY','active','calc'),
+ (1,2,1,NULL, current_date+6,'CNY','active','calc'),
+ (1,2,2,NULL, current_date+6,'CNY','active','calc'),
+ (2,3,3,NULL, current_date+7,'CNY','active','calc'),
+ (2,3,4,NULL, current_date+7,'CNY','active','calc'),
+ (3,4,5,NULL, current_date+8,'CNY','active','calc'),
+ (4,5,6,NULL, current_date+9,'CNY','active','calc'),
+ (5,6,7,NULL, current_date+10,'CNY','active','calc'),
+ (5,6,8,NULL, current_date+10,'CNY','active','calc');
 
 -- -------------------------------------------------------------------------------------
 -- 11. 渠道（B端 / C端）
@@ -305,14 +330,19 @@ VALUES
 -- 上架
 INSERT INTO channel_listing (id, channel_id, product_id, status, price_policy, stock_policy, booking_policy, min_order_qty, max_order_qty, sort_weight, published_at) OVERRIDING SYSTEM VALUE
 VALUES
- (1,1,1,'online','{"mode":"cost_plus","percent":27.8,"min_margin":0.15}','{"mode":"full"}','{"mode":"instant","confirm_deadline_min":30}',1,10,100,now()),
- (2,1,2,'online','{"mode":"cost_plus","percent":36.6,"min_margin":0.15}','{"mode":"full"}','{"mode":"instant","confirm_deadline_min":30}',1,10,90,now()),
- (3,1,3,'online','{"mode":"cost_plus","percent":30.7,"min_margin":0.12}','{"mode":"full"}','{"mode":"instant"}',1,6,80,now()),
- (4,1,4,'online','{"mode":"cost_plus","percent":37.5,"min_margin":0.10}','{"mode":"full"}','{"mode":"instant"}',1,10,70,now()),
- (5,1,5,'online','{"mode":"cost_plus","percent":27.8,"min_margin":0.15}','{"mode":"full"}','{"mode":"instant"}',1,10,60,now()),
- (6,2,1,'online','{"mode":"cost_plus","percent":18.0,"min_margin":0.08}','{"mode":"full"}','{"mode":"instant"}',1,20,100,now()),
- (7,2,2,'online','{"mode":"cost_plus","percent":22.0,"min_margin":0.08}','{"mode":"full"}','{"mode":"instant"}',1,20,90,now()),
- (8,3,1,'online','{"mode":"cost_plus","percent":20.0,"min_margin":0.10}','{"mode":"limited","limit":5}','{"mode":"instant","need_deposit":false}',1,5,100,now());
+ -- price_policy 就是定价合同（SPEC.md §4.6）：
+ --   percent              成本加价率
+ --   min_margin           该渠道要求的最低毛利率（与所选源的 min_margin 取严）
+ --   list_markup_percent  划线价相对售价的上浮率（缺省 0，即划线价 = 售价）
+ --   mode                 cost_plus（默认）/ per_group（按团报价）
+ (1,1,1,'online','{"mode":"cost_plus","percent":27.8,"min_margin":0.15,"list_markup_percent":21.7}','{"mode":"full"}','{"mode":"instant","confirm_deadline_min":30}',1,10,100,now()),
+ (2,1,2,'online','{"mode":"cost_plus","percent":36.6,"min_margin":0.15,"list_markup_percent":17.9}','{"mode":"full"}','{"mode":"instant","confirm_deadline_min":30}',1,10,90,now()),
+ (3,1,3,'online','{"mode":"cost_plus","percent":30.7,"min_margin":0.12,"list_markup_percent":15.7}','{"mode":"full"}','{"mode":"instant"}',1,6,80,now()),
+ (4,1,4,'online','{"mode":"cost_plus","percent":37.5,"min_margin":0.10,"list_markup_percent":13.5}','{"mode":"full"}','{"mode":"instant"}',1,10,70,now()),
+ (5,1,5,'online','{"mode":"cost_plus","percent":27.8,"min_margin":0.15,"list_markup_percent":16.3}','{"mode":"full"}','{"mode":"instant"}',1,10,60,now()),
+ (6,2,1,'online','{"mode":"cost_plus","percent":18.0,"min_margin":0.08,"list_markup_percent":17.2}','{"mode":"full"}','{"mode":"instant"}',1,20,100,now()),
+ (7,2,2,'online','{"mode":"cost_plus","percent":22.0,"min_margin":0.08,"list_markup_percent":16.7}','{"mode":"full"}','{"mode":"instant"}',1,20,90,now()),
+ (8,3,1,'online','{"mode":"cost_plus","percent":20.0,"min_margin":0.10,"list_markup_percent":15.0}','{"mode":"limited","limit":5}','{"mode":"instant","need_deposit":false}',1,5,100,now());
 
 -- 路由绑定：哪些源供给这个渠道上架，按 priority / fallback_order
 INSERT INTO channel_listing_source (channel_listing_id, supplier_product_id, supplier_id, priority, fallback_order, min_margin, max_daily_qty, enabled)
@@ -327,7 +357,8 @@ VALUES
  (5,8,5,10,1,0.15,NULL,true),
  (6,4,4,10,1,0.08,NULL,true),    -- B端 · globaltix 主
  (6,3,3,20,2,0.08,NULL,true),    -- B端 · jtb 备
- (7,7,4,10,1,0.08,NULL,true),    -- B端 · P2 globaltix 主
+ (7,6,3,10,1,0.08,NULL,true),    -- B端 · P2 jtb 主
+ (7,7,4,20,2,0.08,NULL,true),    -- B端 · P2 globaltix 备
  (8,5,5,10,1,0.10,10,true);      -- 企业客户 · 票付通（限每日 10）
 
 -- -------------------------------------------------------------------------------------
@@ -346,7 +377,7 @@ VALUES (1,'TC20261028000001',1,1,'fulfilled','paid','fulfilled','CNY',276.00,0.0
 
 -- 订单 2：B端分销，已付款、预订成功、已出票（未核销）
 INSERT INTO sales_order (id, order_no, channel_id, customer_id, status, payment_status, fulfillment_status, currency, subtotal, discount, tax, total, cost_total, commission_amount, pricing_snapshot, contact_snapshot, idempotency_key, placed_at, confirmed_at, completed_at) OVERRIDING SYSTEM VALUE
-VALUES (2,'TC20261028000002',2,2,'confirmed','paid','fulfilled','HKD',276.00,0.00,0.00,276.00,236.00,33.12,
+VALUES (2,'TC20261028000002',2,2,'fulfilled','paid','fulfilled','HKD',276.00,0.00,0.00,276.00,236.00,33.12,
  '{"rule":"cost_plus","sell_price":138.00,"cost":118.00,"currency":"HKD","channel_override":true}','{"name":"港中旅旅行社"}',
  'idem-b2b-002', now() - interval '5 hours', now() - interval '4 hours 50 minutes', now() - interval '4 hours 40 minutes');
 
@@ -408,11 +439,13 @@ INSERT INTO booking_event (booking_id, from_status, to_status, event_type, paylo
  (3,'requested','failed','BookingFailed','{"error":"STOCK_LOCKED"}');
 
 -- 票券凭证
-INSERT INTO voucher (id, voucher_no, order_id, order_item_id, booking_id, product_id, supplier_id, ticket_type_id, session_id, code, qr_payload, status, issued_at, valid_from, valid_to, holder_snapshot) OVERRIDING SYSTEM VALUE
-VALUES (1,'VC20261028000001',1,1,1,1,5,1,1,'PFT90001','PFT90001|1|a3f9c2e1','issued',now() - interval '2 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day','{"name":"陈小雅"}'),
- (2,'VC20261028000002',1,1,1,1,5,1,1,'PFT90002','PFT90002|1|a3f9c2e1','used',now() - interval '2 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day','{"name":"陈小雅"}'),
- (3,'VC20261028000003',2,2,2,1,4,1,1,'GTX77881','GTX77881|2|be72f0aa','issued',now() - interval '4 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day','{"name":"港中旅旅行社"}'),
- (4,'VC20261028000004',2,2,2,1,4,1,1,'GTX77882','GTX77882|2|be72f0aa','issued',now() - interval '4 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day','{"name":"港中旅旅行社"}');
+-- 券 2 已核销：核销时间落在券的有效期内（不变量 68），
+-- 额度已用尽（不变量 67），并且重复扫过一次 —— 第二次记 duplicate，不覆盖事实（不变量 66）。
+INSERT INTO voucher (id, voucher_no, order_id, order_item_id, booking_id, product_id, supplier_id, ticket_type_id, session_id, code, qr_payload, status, issued_at, valid_from, valid_to, used_at, used_channel, holder_snapshot) OVERRIDING SYSTEM VALUE
+VALUES (1,'VC20261028000001',1,1,1,1,5,1,1,'PFT90001','PFT90001|1|a3f9c2e1','issued',now() - interval '2 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day',NULL,NULL,'{"name":"陈小雅"}'),
+ (2,'VC20261028000002',1,1,1,1,5,1,1,'PFT90002','PFT90002|1|a3f9c2e1','used',now() - interval '2 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day', (current_date+5)::timestamptz + interval '10 hours','C2C','{"name":"陈小雅"}'),
+ (3,'VC20261028000003',2,2,2,1,4,1,1,'GTX77881','GTX77881|2|be72f0aa','issued',now() - interval '4 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day',NULL,NULL,'{"name":"港中旅旅行社"}'),
+ (4,'VC20261028000004',2,2,2,1,4,1,1,'GTX77882','GTX77882|2|be72f0aa','issued',now() - interval '4 hours 55 minutes', (current_date+5)::timestamptz, (current_date+5)::timestamptz + interval '1 day',NULL,NULL,'{"name":"港中旅旅行社"}');
 
 INSERT INTO voucher_entitlement (voucher_id, entitlement_type, quantity, consumed_quantity, meta)
 VALUES (1,'admission',1,0,'{"gate":"特展入口 B2"}'),
@@ -420,8 +453,11 @@ VALUES (1,'admission',1,0,'{"gate":"特展入口 B2"}'),
  (3,'admission',1,0,'{"gate":"特展入口 B2"}'),
  (4,'admission',1,0,'{"gate":"特展入口 B2"}');
 
-INSERT INTO voucher_redemption (voucher_id, supplier_id, result, scanned_at, gate_location, device_id)
-VALUES (2,5,'success', now() - interval '40 minutes','特展入口 B2','POS-HK-0117');
+-- 核销记录：一次成功 + 一次重复扫票。
+-- 重复扫票不是错误，是事实 —— 票务欺诈的入口就在这里，压掉就看不见了。
+INSERT INTO voucher_redemption (voucher_id, supplier_id, result, scanned_at, gate_location, device_id, reason, consumed_quantity)
+VALUES (2,5,'success', (current_date+5)::timestamptz + interval '10 hours','特展入口 B2','POS-HK-0117',NULL,1),
+       (2,5,'duplicate', (current_date+5)::timestamptz + interval '10 hours 30 minutes','特展入口 B2','POS-HK-0117','already_redeemed',0);
 
 -- -------------------------------------------------------------------------------------
 -- 13. 结算
@@ -657,10 +693,12 @@ VALUES (1,'CART20261028001',1,1,'active', now() + interval '30 minutes'),
        (2,'CART20261028002',1,1,'expired', now() - interval '2 hours'),
        (3,'CART20261028003',1,3,'converted', now() - interval '1 day');
 
-INSERT INTO inventory_hold (id, hold_no, channel_id, product_session_id, ticket_type_id, supplier_id, quantity, status, order_id, cart_id, expires_at, released_at) OVERRIDING SYSTEM VALUE
-VALUES (1,'HOLD20261028001',1,1,1,5,2,'active',NULL,1, now() + interval '30 minutes',NULL),
-       (2,'HOLD20261028002',1,1,1,5,2,'consumed',1,3, now() - interval '3 hours',NULL),
-       (3,'HOLD20261028003',1,6,7,5,1,'released',NULL,2, now() - interval '2 hours', now() - interval '2 hours');
+-- 库存预占（009）：supplier_session_id 是预占占的源侧场次，consumed_quantity 是已兑现的量。
+-- 预占 2 已被订单 1 吃掉（所以是 consumed，且兑现量 = 预占量）。
+INSERT INTO inventory_hold (id, hold_no, channel_id, product_session_id, ticket_type_id, supplier_id, quantity, status, order_id, cart_id, expires_at, released_at, supplier_session_id, consumed_quantity, release_reason) OVERRIDING SYSTEM VALUE
+VALUES (1,'HOLD20261028001',1,1,1,5,2,'active',NULL,1, now() + interval '30 minutes',NULL,5,0,NULL),
+       (2,'HOLD20261028002',1,1,1,5,2,'consumed',1,3, now() - interval '3 hours',NULL,5,2,NULL),
+       (3,'HOLD20261028003',1,6,7,5,1,'released',NULL,2, now() - interval '2 hours', now() - interval '2 hours',10,0,'cart_abandoned');
 
 INSERT INTO cart_item (id, cart_id, product_id, session_id, ticket_type_id, quantity, unit_price, price_snapshot, hold_id)
 OVERRIDING SYSTEM VALUE VALUES (1,1,1,1,1,2,138.00,'{"sell_price":138.00,"cost":108.00}',1),
@@ -700,17 +738,17 @@ VALUES (1,5,'PFT-HK-EXH-B2','特展 B2 闸机','香港故宫文化馆 B2',22.304
 INSERT INTO gate_operator (id, gate_id, code, name) OVERRIDING SYSTEM VALUE
 VALUES (1,1,'OP-HK-0117','张伟');
 
-UPDATE voucher_redemption SET gate_id = 1, gate_operator_id = 1 WHERE id = 1;
+UPDATE voucher_redemption SET gate_id = 1, gate_operator_id = 1 WHERE voucher_id = 2 AND result = 'success';
 
 -- -------------------------------------------------------------------------------------
 -- 15.9 B 端渠道专属价格（证明卡片起价按渠道隔离）
+--     币种由渠道决定（B2B_HK = HKD），金额由第 17 节的定价函数按渠道规则算。
 -- -------------------------------------------------------------------------------------
-INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency,
-                            cost_price, cost_source_product_id, sell_price, list_price, discount_pct, rule, status, source)
-VALUES (1,1,1,2, current_date+5,'HKD',118.00,4,128.00,150.00,14.67,'{"mode":"cost_plus","percent":8.5}','active','calc'),
-       (1,1,2,2, current_date+5,'HKD', 78.00,4, 88.00,105.00,16.19,'{"mode":"cost_plus","percent":12.8}','active','calc'),
-       (1,2,1,2, current_date+6,'HKD',118.00,4,128.00,150.00,14.67,'{"mode":"cost_plus","percent":8.5}','active','calc'),
-       (2,3,3,2, current_date+7,'HKD',133.18,6,150.00,175.00,14.29,'{"mode":"cost_plus","percent":12.6,"note":"JPY 成本先折算基准币种再折 HKD"}','active','calc');
+INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, status, source)
+VALUES (1,1,1,2, current_date+5,'HKD','active','calc'),
+       (1,1,2,2, current_date+5,'HKD','active','calc'),
+       (1,2,1,2, current_date+6,'HKD','active','calc'),
+       (2,3,3,2, current_date+7,'HKD','active','calc');
 
 -- -------------------------------------------------------------------------------------
 -- 15.10 券核销补齐：订单2 使用港币券
@@ -849,13 +887,15 @@ VALUES (1,6,'pass_type','票种','enum',true,true,10,'active'),
        (2,6,'park_scope','园区范围','set',true,true,20,'active'),
        (3,6,'addon_type','加购件','enum',false,true,30,'active');
 
-INSERT INTO product_axis_option (id, axis_id, option_code, option_name, option_attrs, sort_order, status) OVERRIDING SYSTEM VALUE
-VALUES (1,1,'1d','一日票','{"valid_days":1}',10,'active'),
-       (2,1,'2d','双日票','{"valid_days":2}',20,'active'),
-       (3,2,'studio_only','工作室之旅（单园区）','{"park_ids":["studio_tour"],"park_names":["工作室之旅"]}',10,'active'),
-       (4,2,'studio_snw','工作室之旅 + 超级任天堂世界','{"park_ids":["studio_tour","snw"],"park_names":["工作室之旅","超级任天堂世界"]}',20,'active'),
-       (5,2,'studio_minion_hp','工作室之旅 + 小黄人乐园 + 哈利波特','{"park_ids":["studio_tour","minion_land","harry_potter"],"park_names":["工作室之旅","小黄人乐园","哈利波特"]}',30,'active'),
-       (6,3,'express','快速通行证（不限次）','{"addon":"express"}',10,'active');
+-- valid_days 是「这条取值有效几天」（010）：从 option_attrs 搬到独立列 ——
+-- 它要被计算、被门禁断言，得有自己的类型和约束。搬了家就不再在 jsonb 里留一份。
+INSERT INTO product_axis_option (id, axis_id, option_code, option_name, option_attrs, valid_days, sort_order, status) OVERRIDING SYSTEM VALUE
+VALUES (1,1,'1d','一日票','{}',1,10,'active'),
+       (2,1,'2d','双日票','{}',2,20,'active'),
+       (3,2,'studio_only','工作室之旅（单园区）','{"park_ids":["studio_tour"],"park_names":["工作室之旅"]}',NULL,10,'active'),
+       (4,2,'studio_snw','工作室之旅 + 超级任天堂世界','{"park_ids":["studio_tour","snw"],"park_names":["工作室之旅","超级任天堂世界"]}',NULL,20,'active'),
+       (5,2,'studio_minion_hp','工作室之旅 + 小黄人乐园 + 哈利波特','{"park_ids":["studio_tour","minion_land","harry_potter"],"park_names":["工作室之旅","小黄人乐园","哈利波特"]}',NULL,30,'active'),
+       (6,3,'express','快速通行证（不限次）','{"addon":"express"}',NULL,10,'active');
 
 -- 可售变体 = 人群 × 票种 × 园区范围；加购件是独立可售变体（role=addon）
 INSERT INTO product_variant (id, product_id, variant_code, variant_key, title, variant_role, ticket_type_id, status, sort_order) OVERRIDING SYSTEM VALUE
@@ -976,22 +1016,23 @@ VALUES
 
 -- -------------------------------------------------------------------------------------
 -- 16.8 对客售价（变体级）：成本取该变体在各源中的最优净价
+--     同样只写骨架，金额由第 17 节的定价函数回填。
 -- -------------------------------------------------------------------------------------
-INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, cost_price, cost_source_product_id, sell_price, list_price, discount_pct, rule, status, source, product_variant_id)
-VALUES (6,7,9,NULL, current_date+12,'CNY',505.00,10,585.00,658.00,11.09,'{"mode":"cost_plus","percent":15.8}','active','calc',9),
-       (6,7,10,NULL,current_date+12,'CNY',418.00,10,495.00,556.00,10.97,'{"mode":"cost_plus","percent":18.4}','active','calc',10),
-       (6,7,11,NULL,current_date+12,'CNY',486.00, 9,565.00,635.00,11.02,'{"mode":"cost_plus","percent":16.3}','active','calc',11),
-       (6,7,9,NULL, current_date+12,'CNY',552.00,10,645.00,725.00,11.03,'{"mode":"cost_plus","percent":16.8}','active','calc',12),
-       (6,7,10,NULL,current_date+12,'CNY',482.00,10,565.00,635.00,11.02,'{"mode":"cost_plus","percent":17.2}','active','calc',13),
-       (6,7,9,NULL, current_date+12,'CNY',856.00,10,985.00,1106.00,11.03,'{"mode":"cost_plus","percent":15.1}','active','calc',14),
-       (6,7,10,NULL,current_date+12,'CNY',766.00,10,885.00,995.00,11.06,'{"mode":"cost_plus","percent":15.5}','active','calc',15),
-       (6,7,NULL,NULL,current_date+12,'CNY',338.00,10,398.00,448.00,11.16,'{"mode":"cost_plus","percent":17.8}','active','calc',16);
+INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, status, source, product_variant_id)
+VALUES (6,7,9,NULL, current_date+12,'CNY','active','calc',9),
+       (6,7,10,NULL,current_date+12,'CNY','active','calc',10),
+       (6,7,11,NULL,current_date+12,'CNY','active','calc',11),
+       (6,7,9,NULL, current_date+12,'CNY','active','calc',12),
+       (6,7,10,NULL,current_date+12,'CNY','active','calc',13),
+       (6,7,9,NULL, current_date+12,'CNY','active','calc',14),
+       (6,7,10,NULL,current_date+12,'CNY','active','calc',15),
+       (6,7,NULL,NULL,current_date+12,'CNY','active','calc',16);
 
 -- -------------------------------------------------------------------------------------
 -- 16.9 渠道上架 + 上架源绑定 + C 端读模型
 -- -------------------------------------------------------------------------------------
 INSERT INTO channel_listing (id, channel_id, product_id, status, price_policy, stock_policy, booking_policy, min_order_qty, max_order_qty, sort_weight, published_at) OVERRIDING SYSTEM VALUE
-VALUES (9,1,6,'online','{"mode":"cost_plus","percent":16.0,"min_margin":0.12}','{"mode":"full"}','{"mode":"instant","confirm_deadline_min":30}',1,10,50,now());
+VALUES (9,1,6,'online','{"mode":"cost_plus","percent":16.0,"min_margin":0.12,"list_markup_percent":12.5}','{"mode":"full"}','{"mode":"instant","confirm_deadline_min":30}',1,10,50,now());
 
 INSERT INTO channel_listing_source (channel_listing_id, supplier_product_id, supplier_id, priority, fallback_order, min_margin, max_daily_qty, enabled)
 VALUES (9,9,7,10,1,0.12,NULL,true),    -- C端 · Trip.com 主
@@ -1044,8 +1085,8 @@ VALUES (8,6,9,1,'holder_name','持票人姓名','string',true,60,12,NULL,'sensit
 INSERT INTO cart (id, cart_no, channel_id, customer_id, status, expires_at) OVERRIDING SYSTEM VALUE
 VALUES (4,'CART20261103004',1,3,'active', now() + interval '30 minutes');
 
-INSERT INTO inventory_hold (id, hold_no, channel_id, product_session_id, ticket_type_id, supplier_id, quantity, status, order_id, cart_id, expires_at, released_at, product_variant_id) OVERRIDING SYSTEM VALUE
-VALUES (4,'HOLD20261103004',1,7,9,6,1,'active',NULL,4, now() + interval '30 minutes',NULL,12);
+INSERT INTO inventory_hold (id, hold_no, channel_id, product_session_id, ticket_type_id, supplier_id, quantity, status, order_id, cart_id, expires_at, released_at, product_variant_id, supplier_session_id, consumed_quantity) OVERRIDING SYSTEM VALUE
+VALUES (4,'HOLD20261103004',1,7,9,6,1,'active',NULL,4, now() + interval '30 minutes',NULL,12,12,0);
 
 INSERT INTO cart_item (id, cart_id, product_id, session_id, ticket_type_id, quantity, unit_price, price_snapshot, hold_id, product_variant_id)
 OVERRIDING SYSTEM VALUE VALUES (4,4,6,7,9,1,645.00,'{"sell_price":645.00,"cost":552.00,"variant":"adult:1d:studio_snw"}',4,12);
@@ -1118,14 +1159,9 @@ VALUES (5,5,9,1,'holder_name','王大明','h7'),
 --    这里刻意选「老年·一日·单园区」：它的采纳成本恰好来自 Trip.com（486 < Zowoyoo 505），
 --    而 Trip.com 的这个资源带 isPrivatePrice → 对客售价必须原样等于携程卖价 498.00。
 --    同一商品的其他变体采纳的是 Zowoyoo（非保护源）→ 售价可自主定价，未锁。
+--    平台侧的 sell_price / price_locked 由第 17 节的定价函数按这条源属性派生，
+--    这里不再手写 —— 手写就意味着「锁价」和「定价」是两套逻辑。
 UPDATE supplier_variant SET is_price_locked = true WHERE id = 17;
-
-UPDATE price_calendar
-   SET price_locked = true,
-       sell_price   = 498.00,
-       list_price   = 558.00,
-       rule         = '{"mode":"price_locked","source":"trip_com","note":"携程 isPrivatePrice：对客售价必须原样等于携程卖价 498.00，不得加价"}'
- WHERE product_variant_id = 11;
 
 UPDATE c_variant_calendar SET price_min = 498.00, price_max = 498.00 WHERE product_variant_id = 11;
 
@@ -1142,8 +1178,8 @@ VALUES (12,7,'standard','标准票（不区分人群）','按团计价，不区�
 INSERT INTO product_axis (id, product_id, axis_code, axis_name, axis_kind, is_required, is_pricing, sort_order, status) OVERRIDING SYSTEM VALUE
 VALUES (4,7,'pass_type','行程天数','enum',true,true,10,'active');
 
-INSERT INTO product_axis_option (id, axis_id, option_code, option_name, option_attrs, sort_order, status) OVERRIDING SYSTEM VALUE
-VALUES (7,4,'1d','一日行程','{"valid_days":1}',10,'active');
+INSERT INTO product_axis_option (id, axis_id, option_code, option_name, option_attrs, valid_days, sort_order, status) OVERRIDING SYSTEM VALUE
+VALUES (7,4,'1d','一日行程','{}',1,10,'active');
 
 INSERT INTO product_variant (id, product_id, variant_code, variant_key, title, variant_role, ticket_type_id, status, sort_order) OVERRIDING SYSTEM VALUE
 VALUES (17,7,'BJ-TOUR-GROUP-1D','standard:1d','一日游 · 团队票（按团报价）','base',12,'active',10);
@@ -1177,15 +1213,17 @@ VALUES (8,13,7,11,'primary','{}',10);
 INSERT INTO supplier_price_calendar (supplier_product_id, supplier_ticket_type_id, supplier_session_id, product_id, date, currency, supplier_price, net_price, tax, min_qty, max_qty, status, product_variant_id, supplier_variant_id)
 VALUES (11,NULL,13,7, current_date+13,'CNY',1200.00,1100.00,100.00,6,40,'available',17,25);
 
--- 对客售价：团总价 1200.00（不是「单价 × 人数」）
-INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, cost_price, cost_source_product_id, sell_price, list_price, discount_pct, rule, status, source, product_variant_id)
-VALUES (7,8,12,NULL, current_date+13,'CNY',1100.00,11,1200.00,1380.00,13.04,'{"mode":"per_group","group_total":1200.00,"group_min":6,"note":"按团报价：总价=团总价，与人数不成正比"}','active','calc',17);
+-- 对客售价：团总价（不是「单价 × 人数」）。金额由定价函数按 per_group 规则算：
+--     售价 = 源方团报价（1200.00），平台不加价；毛利口径与单份不同，不套 min_margin。
+INSERT INTO price_calendar (product_id, session_id, ticket_type_id, channel_id, date, currency, status, source, product_variant_id)
+VALUES (7,8,12,NULL, current_date+13,'CNY','active','calc',17);
 
+-- 按团报价的上架规则：售价 = 源方团报价，平台不加价（毛利口径由商务单独约定，不套 min_margin）。
 INSERT INTO channel_listing (id, channel_id, product_id, status, price_policy, stock_policy, booking_policy, min_order_qty, max_order_qty, sort_weight, published_at) OVERRIDING SYSTEM VALUE
-VALUES (10,1,7,'online','{"mode":"per_group","min_margin":0.10}','{"mode":"full"}','{"mode":"instant"}',1,2,40,now());
+VALUES (10,1,7,'online','{"mode":"per_group","group_min":6,"list_markup_percent":15.0,"note":"按团报价：总价=团总价，与人数不成正比"}','{"mode":"full"}','{"mode":"instant"}',1,2,40,now());
 
 INSERT INTO channel_listing_source (channel_listing_id, supplier_product_id, supplier_id, priority, fallback_order, min_margin, max_daily_qty, enabled)
-VALUES (10,11,7,10,1,0.10,NULL,true);
+VALUES (10,11,7,10,1,0,NULL,true);
 
 INSERT INTO c_product_card (channel_id, product_id, locale, title, subtitle, thumb_url, city_id, category_id,
                             rating, review_count, currency, from_price, list_price, next_available_date, available_days,
@@ -1206,6 +1244,28 @@ VALUES (6,'TC20261103000006',1,3,'fulfilled','paid','fulfilled','CNY',1200.00,0.
 INSERT INTO sales_order_item (id, order_id, product_id, channel_listing_id, supplier_product_id, supplier_id, session_id, ticket_type_id, quantity, unit_price, unit_cost, total_price, currency, detail_snapshot, status, product_variant_id, pricing_basis) OVERRIDING SYSTEM VALUE
 VALUES (7,6,7,10,11,7,8,12,7,171.43,157.14,1200.00,'CNY',
  '{"title":"北京一日游 · 团队票","date":"2026-11-17","group_total":1200.00,"group_size":7,"price_setting_type":4,"pricing_basis":"per_group","unit_quantity":1,"ticket_type":"标准票（不区分人群）","meeting_point":"东方广场集合点"}','ticketed',17,'per_group');
+
+-- -------------------------------------------------------------------------------------
+-- 16.13 订单侧的库存预占（009）
+--
+-- 每条订单明细都要有一条预占记录：「我们卖出去多少」必须查得到（不变量 69）。
+-- 订单 1 的预占在上面（预占 2，已 consumed），这里补订单 2-6 的。
+--
+-- 订单 4 未付款超时 → 它的预占被作废了（voided），但仍挂在订单上：
+-- 票卖过又收回来了，兑现量仍是 1（事实不能改写）。
+--
+-- consumed_quantity 是「这张预占里已经兑现的量」：被订单吃掉的那部分。
+-- -------------------------------------------------------------------------------------
+INSERT INTO inventory_hold (id, hold_no, channel_id, product_session_id, ticket_type_id, supplier_id,
+                            quantity, status, order_id, cart_id, expires_at, released_at,
+                            product_variant_id, supplier_session_id, consumed_quantity, release_reason)
+OVERRIDING SYSTEM VALUE
+VALUES (5,'HOLD20261028005',2,1,1,4,2,'consumed',2,NULL, now() - interval '5 hours',NULL,NULL,1,2,NULL),
+       (6,'HOLD20261028006',1,6,7,5,1,'consumed',3,NULL, now() - interval '40 minutes',NULL,NULL,10,1,NULL),
+       (7,'HOLD20261028007',1,4,5,1,1,'voided',4,NULL, now() - interval '2 days', now() - interval '2 days',NULL,8,1,'order_expired'),
+       (8,'HOLD20261103008',1,7,9,6,1,'consumed',5,NULL, now() - interval '3 hours',NULL,12,12,1,NULL),
+       (9,'HOLD20261103009',1,7,10,6,1,'consumed',5,NULL, now() - interval '3 hours',NULL,13,12,1,NULL),
+       (10,'HOLD20261103010',1,8,12,7,7,'consumed',6,NULL, now() - interval '4 hours',NULL,17,13,7,NULL);
 
 INSERT INTO sales_payment (id, order_id, channel_id, payment_method, amount, currency, status, provider, provider_txn_id, paid_at) OVERRIDING SYSTEM VALUE
 VALUES (5,6,1,'alipay',1200.00,'CNY','succeeded','alipay','ALI88000006', now() - interval '3 hours 58 minutes');
@@ -1237,6 +1297,10 @@ VALUES (7,'admission',7,0,'{"gate":"东方广场集合点","group_size":7,"prici
 -- 等 19 张表的序列停在 1，而 max(id) 已经到十几 —— 应用第一次 INSERT 就撞主键。
 --
 -- 改成遍历 public schema 下所有 identity 序列，新增表不会再漏。
+--
+-- 位置有讲究：**显式 id 的插入必须在这一段之前**（它们不会推进序列）；
+-- 这一段之后的调用（函数自己取 id）会正常消耗序列，对齐不会被打破。
+-- 第 18 节的组合套餐走真实下单链路，所以它放在这一段之后。
 -- -------------------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -1282,6 +1346,673 @@ BEGIN
   IF stale <> '' THEN
     RAISE EXCEPTION '序列未对齐（seed 之后应用无法插入）：%', stale;
   END IF;
+END $$;
+
+-- -------------------------------------------------------------------------------------
+-- -------------------------------------------------------------------------------------
+-- 17. 定价：唯一的实现在这
+--
+-- 前面所有 price_calendar 行都只写了骨架（卖哪一行），金额在这里一次性算出来：
+--   fn_price_variant(变体, 日期, 规则来源渠道, 售价行写给哪个渠道)
+-- 成本、售价、划线价、折扣、锁价标记、汇率留痕全部来自这个函数。
+--
+-- 为什么必须是它：
+--   - 同一批源数据，视图、Go 接入层、演练器、种子数据要给出同一个价格；
+--   - 钱必须是 NUMERIC（硬约束 5），Python 那份用 float() 算钱迟早差一分钱；
+--   - 锁价、按团报价、折算口径如果各写一份，三份实现迟早各说各话。
+--
+-- 默认行（channel_id IS NULL）归 C 端自营渠道：规则与可选源都取自它的上架关系，
+-- 由 fn_default_context_channel() 决定，不靠谁记得「默认行是 channel 1」。
+-- -------------------------------------------------------------------------------------
+-- UPDATE 的 FROM 项的参数里不能直接引用被更新的表（那是「引用 FROM-clause entry」错误的来源），
+-- 所以重算逻辑放在数据库函数里：种子数据、演练器、接入层都调同一个 fn_reprice_rows()。
+SELECT fn_reprice_rows();
+
+-- 骨架必须全部定价成功：留下一行没有售价的价格 = 卖不出去也不报错。
+DO $$
+DECLARE
+  v_missing text;
+BEGIN
+  SELECT string_agg(format('变体%s@%s', pc.product_variant_id, pc.date), ', ')
+    INTO v_missing
+    FROM price_calendar pc
+   WHERE pc.status = 'active'
+     AND (pc.sell_price IS NULL OR pc.cost_price IS NULL);
+  IF v_missing IS NOT NULL THEN
+    RAISE EXCEPTION '这些售价行没有被定价（缺源报价/缺上架关系/缺汇率快照）：%', v_missing;
+  END IF;
+END $$;
+
+-- 17.1 C 端读模型跟着价格刷新
+--     刷新动作只有一个实现：fn_refresh_read_models()（db/migrations/002_read_model_refresh.sql）。
+--     种子、演练器、接入层、将来的定时作业都调它 —— 口径写在函数里，不写在调用方。
+--     口径：渠道可见的售价行里未来 30 天的最小售价（渠道专属行优先），排除加购件。
+SELECT * FROM fn_refresh_read_models();
+
+-- =====================================================================================
+-- 18. 组合套餐（异构融合方向 B）：家庭套票
+--
+-- 012 把「一个可售单元由多个源 SKU 按数量组成」这件事**表达**出来了：
+--   规范侧声明组件与数量（product_variant_relation.quantity），
+--   源侧给配方（supplier_variant_composition）。
+-- 013 让它真的能卖：定价、预订、出券三条写路径都接组合。
+--
+-- 这一节是它的验证对象：
+--   组合：家庭套票 = 2 份成人一日园区通票 + 1 份儿童一日园区通票
+--   规范侧声明：成人成分（变体 9）× 2、儿童成分（变体 10）× 1
+--   源侧配方：两个成分都由 Zowoyoo 的**同一个**源 SKU（sv 21）顶
+--
+-- 配方刻意用同一个源 SKU 顶两个成分：
+--   Zowoyoo 的「一日票 · 单园区」是人群参数化的 SKU（成人/儿童/老年都在里面），
+--   家庭套票就是「这个 SKU 订 3 份，其中 2 份成人、1 份儿童」。
+--   012 的唯一键（一个组合里一个源 SKU 只出现一次）把这个形状拒了，
+--   013 放宽成（组合, 成分, 源 SKU）—— 这是异构融合最常见的一种形状，
+--   不放宽就只能接「源侧成人票、儿童票各自一个 SKU」的那一种。
+--
+-- 订单走**真实函数**建，不手写 INSERT：
+--   fn_place_order → fn_record_payment → fn_create_bookings
+--   → fn_request_booking → fn_complete_booking（出券在最后一步里）
+--   手写 INSERT 只能证明「种子数据长得对」，证明不了「代码跑得通」。
+--   这里的每一行成分行、每条预订、每张券，都是被测代码自己写出来的。
+--
+-- 这一节的组合**没有** price_calendar 行 —— 所以它还上不了 C 端日历。
+-- 原因是组合的「有效期终点」和「人群标签」还没定（1 天还是 2 天？家庭还是成人+儿童？），
+-- 硬塞进读模型就是让前端自己加一天、自己猜人群。
+-- 那是下一段的事，见 013 迁移文首「这一段暂时没做的」。
+-- =====================================================================================
+
+-- -------------------------------------------------------------------------------------
+-- 18.1 规范侧：组合变体 + 组件声明
+--
+-- 组合变体自己没有票种（成人 + 儿童混在一张套餐里），
+-- 它「是什么」由组件声明说：2 份成人一日园区通票 + 1 份儿童一日园区通票。
+--
+-- 组合变体的 id 由序列分配（后面一律用 variant_key 找它）：
+-- 显式写 id 不会推进 identity 序列，序列就落后于 max(id) ——
+-- 应用第一次 INSERT 就撞主键（016 序列对齐那段门禁就是查这个）。
+-- -------------------------------------------------------------------------------------
+INSERT INTO product_variant (product_id, variant_code, variant_key, title, variant_role, ticket_type_id, status, sort_order)
+VALUES (6,'USJ-FAMILY-2A1C','family:2adult:1child:studio_only','家庭套票 · 2 成人 + 1 儿童（工作室之旅）','combo',NULL,'active',90);
+
+-- 组件声明：声明的是**规范侧**的成分与数量（「卖的是 2 大 1 小」）。
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type, quantity, price_policy, sort_order)
+SELECT pv.id, 9, 'included', 2, '{}', 10
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult:1child:studio_only';
+
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type, quantity, price_policy, sort_order)
+SELECT pv.id, 10, 'included', 1, '{}', 20
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult:1child:studio_only';
+
+-- -------------------------------------------------------------------------------------
+-- 18.2 源侧配方：成分 ↔ 源 SKU ↔ 份数
+--
+-- 「配对关系记下来，不靠猜」：同一个源 SKU 顶成人成分还是儿童成分，
+-- 靠这一行说清楚 —— 对账时逐行比，不用去猜。
+-- -------------------------------------------------------------------------------------
+INSERT INTO supplier_variant_composition (product_variant_id, component_variant_id, supplier_variant_id, quantity, status)
+SELECT pv.id, 9, 21, 2, 'active'
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult:1child:studio_only';
+
+INSERT INTO supplier_variant_composition (product_variant_id, component_variant_id, supplier_variant_id, quantity, status)
+SELECT pv.id, 10, 21, 1, 'active'
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult:1child:studio_only';
+
+-- -------------------------------------------------------------------------------------
+-- 18.3 定价：组合的成本 = Σ 成分单价 × 成分数量
+--
+--   2 × 505.00（成人，单园区）+ 1 × 418.00（儿童，单园区）= 1428.00
+--   售价 = 1428 × (1 + 16%) = 1656.48
+--
+-- 这里断言的是「定价的唯一实现算出来的数」，
+-- 不是把数写死在种子里再让别的代码去凑 —— 写死就等于两份实现。
+-- -------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_price    RECORD;
+    v_variant  BIGINT;
+    v_expected NUMERIC := 1428.00;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:studio_only';
+
+    IF v_variant IS NULL THEN
+        RAISE EXCEPTION '组合套餐变体没建起来';
+    END IF;
+
+    SELECT * INTO v_price
+      FROM fn_price_variant(v_variant, current_date + 12, 1, 1);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '组合套餐 % 定价失败（配方不齐 / 成分缺价 / 跨源 / 不同场次）', v_variant;
+    END IF;
+
+    IF v_price.cost_price <> v_expected THEN
+        RAISE EXCEPTION '组合套餐成本算错：期望 %，实际 %', v_expected, v_price.cost_price;
+    END IF;
+
+    IF v_price.sell_price <> 1656.48 THEN
+        RAISE EXCEPTION '组合套餐售价算错：期望 1656.48，实际 %', v_price.sell_price;
+    END IF;
+
+    IF NOT (v_price.rule->'combo' IS NOT NULL AND jsonb_array_length(v_price.rule->'combo') = 2) THEN
+        RAISE EXCEPTION '组合套餐的价格快照里没有成分明细（rule->combo）';
+    END IF;
+END $$;
+
+-- -------------------------------------------------------------------------------------
+-- 18.4 交易链路：一张套餐 → 一条预订 → 三张券
+--
+-- 客户买的是**一份**套餐（订单里一行明细）。
+--
+-- 预订的单位是**源 SKU**，不是成分（014 修订）：
+-- 成人票与儿童票在源侧是同一个参数化 SKU（ZWO-1D-BASE，人群是购买时选的一档），
+-- 所以源侧只收一次单，我们要发三张券（2 成人 + 1 儿童）。
+--
+-- 如果按成分建预订，就是同一个源 SKU 被订两次 ——
+-- 源侧看到两张订单单，我们这边一条客户订单对两个源单号，对账对不上。
+-- 这一节跑的就是这条链路，并当场把「只有一条预订」断言住。
+-- -------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_order_id BIGINT;
+    v_order_no TEXT;
+    v_total    NUMERIC;
+    v_booking  BIGINT;
+    v_item_id  BIGINT;
+    v_variant  BIGINT;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:studio_only';
+
+    -- 下单：一份套餐，三位持票人（按成分分组：成人成分 2 人、儿童成分 1 人）
+    SELECT o.order_id, o.order_no, o.order_total
+      INTO v_order_id, v_order_no, v_total
+      FROM fn_place_order(
+               1,
+               'idem-c2c-007-combo',
+               jsonb_build_array(jsonb_build_object(
+                   'variant_id', v_variant, 'quantity', 1, 'visit_date', current_date + 12)),
+               3,
+               jsonb_build_object('name', '王大明'),
+               NULL,
+               jsonb_build_array(
+                   -- 成人成分（变体 9）2 人：姓名 + 证件
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'holder_name', 'value', '王大明'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'id_number',  'value', '110101199001011234'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'holder_name', 'value', '李大明'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'id_number',  'value', '110101199001011235'),
+                   -- 儿童成分（变体 10）1 人：姓名 + 生日
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'holder_name', 'value', '王小明'),
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'dob',        'value', '2018-05-20'))
+           ) o;
+
+    IF v_order_id IS NULL THEN
+        RAISE EXCEPTION '组合套餐下单失败';
+    END IF;
+
+    -- 支付
+    PERFORM fn_record_payment(v_order_id, 'alipay', v_total, 'CNY', 'alipay', 'ALI88000007');
+
+    -- 预订：一个源 SKU 一条预订（成人与儿童在源侧是同一个参数化 SKU）
+    PERFORM fn_create_bookings(v_order_id);
+
+    SELECT count(*) INTO v_booking
+      FROM booking b
+     WHERE b.order_id = v_order_id;
+
+    IF v_booking <> 1 THEN
+        RAISE EXCEPTION '组合套餐应该产生 1 条预订（同一个源 SKU 只订一次），实际 % 条', v_booking;
+    END IF;
+
+    SELECT min(id) INTO v_booking
+      FROM booking b
+     WHERE b.order_id = v_order_id;
+
+    -- 这条预订覆盖两个成分、3 份入场（成分的拆分留在请求明细里）
+    IF (SELECT count(*) FROM fn_booking_components(v_booking)) <> 2 THEN
+        RAISE EXCEPTION '组合套餐的预订应该覆盖 2 个成分，实际 % 个',
+          (SELECT count(*) FROM fn_booking_components(v_booking));
+    END IF;
+
+    IF (SELECT COALESCE(sum(c.admission_quantity), 0) FROM fn_booking_components(v_booking) c) <> 3 THEN
+        RAISE EXCEPTION '组合套餐的预订应该覆盖 3 份入场（2 成人 + 1 儿童），实际 %',
+          (SELECT COALESCE(sum(c.admission_quantity), 0) FROM fn_booking_components(v_booking) c);
+    END IF;
+
+    -- 向源侧下单并出券：票码按成分顺序给（成人 2 张 + 儿童 1 张 = 3 张）
+    PERFORM fn_request_booking(v_booking);
+
+    PERFORM fn_complete_booking(
+        v_booking,
+        'confirmed',
+        'ZWO-BK-FAMILY-001',
+        jsonb_build_object('bookingRef', 'ZYX-BK-FAMILY-001', 'status', 'OK'),
+        NULL, NULL, ARRAY['ZWO99101','ZWO99102','ZWO99103']);
+
+    -- ---- 断言：一份套餐 → 三张券 → 订单履约完成 ----
+    SELECT id INTO v_item_id
+      FROM sales_order_item
+     WHERE order_id = v_order_id;
+
+    IF (SELECT count(*) FROM sales_order_item WHERE order_id = v_order_id) <> 1 THEN
+        RAISE EXCEPTION '组合套餐应该只有一行订单明细';
+    END IF;
+
+    IF (SELECT count(*) FROM sales_order_item_source WHERE order_item_id = v_item_id) <> 2 THEN
+        RAISE EXCEPTION '组合套餐应该落 2 行成分';
+    END IF;
+
+    IF (SELECT count(*) FROM voucher WHERE order_item_id = v_item_id AND status = 'issued') <> 3 THEN
+        RAISE EXCEPTION '组合套餐应该发 3 张券（2 成人 + 1 儿童），实际 % 张',
+          (SELECT count(*) FROM voucher WHERE order_item_id = v_item_id AND status = 'issued');
+    END IF;
+
+    -- 三张券要分对成分：成人 2 张挂成分 9，儿童 1 张挂成分 10
+    IF (SELECT count(*) FROM voucher
+         WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 9) <> 2 THEN
+        RAISE EXCEPTION '组合套餐应该有 2 张成人券（成分 9），实际 % 张',
+          (SELECT count(*) FROM voucher
+            WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 9);
+    END IF;
+
+    IF (SELECT count(*) FROM voucher
+         WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 10) <> 1 THEN
+        RAISE EXCEPTION '组合套餐应该有 1 张儿童券（成分 10），实际 % 张',
+          (SELECT count(*) FROM voucher
+            WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 10);
+    END IF;
+
+    -- 持票人按成分归位：儿童那张必须是王小明，不能挂到成人头上
+    IF (SELECT holder_snapshot->>'holder_name' FROM voucher
+         WHERE order_item_id = v_item_id AND product_variant_id = 10 AND status = 'issued') <> '王小明' THEN
+        RAISE EXCEPTION '儿童券的持票人应该是王小明（按成分归位，不按票种）';
+    END IF;
+
+    IF (SELECT count(*) FROM voucher
+         WHERE order_item_id = v_item_id AND status = 'issued'
+           AND product_variant_id = 9
+           AND holder_snapshot->>'holder_name' IN ('王大明', '李大明')) <> 2 THEN
+        RAISE EXCEPTION '两张成人券的持票人应该是王大明与李大明';
+    END IF;
+
+    IF (SELECT status FROM sales_order WHERE id = v_order_id) <> 'fulfilled' THEN
+        RAISE EXCEPTION '组合套餐出票后订单应为 fulfilled，实际 %',
+          (SELECT status FROM sales_order WHERE id = v_order_id);
+    END IF;
+
+    IF (SELECT status FROM sales_order_item WHERE id = v_item_id) <> 'ticketed' THEN
+        RAISE EXCEPTION '组合套餐出票后明细应为 ticketed，实际 %',
+          (SELECT status FROM sales_order_item WHERE id = v_item_id);
+    END IF;
+
+    IF (SELECT count(*) FROM order_holder WHERE order_item_id = v_item_id) <> 6 THEN
+        RAISE EXCEPTION '组合套餐应收 6 条持票人字段（成人 2 人 × 2 字段 + 儿童 1 人 × 2 字段），实际 % 条',
+          (SELECT count(*) FROM order_holder WHERE order_item_id = v_item_id);
+    END IF;
+
+    IF (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id AND status = 'consumed') <> 2 THEN
+        RAISE EXCEPTION '组合套餐应该有 2 张成分预占（每个成分一张），实际 % 张',
+          (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id AND status = 'consumed');
+    END IF;
+END $$;
+
+-- 18.5 组合套餐的退款：整单退，事实一起改
+--
+-- 套餐退起来不是「退一行」，是**退掉整张配方**：
+-- 三张券全部作废、一条预订取消（源侧只收了一次单）、两条预占全部收回。
+-- 这一节走的是真实退款函数（发起 → 放行 → 完成），不是 UPDATE。
+--
+-- 为什么种子要留一笔退过款的套餐：
+--   退过款的订单，预占是 voided（卖过又收回，兑现量仍是原数）；
+--   如果不变量只认 consumed，这笔订单就被自己判成「没预占」——
+--   正好是「作废不是消失」这条规矩的反面。留着它，不变量 69 才有牙齿。
+-- -------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_order_id  BIGINT;
+    v_order_no  TEXT;
+    v_total     NUMERIC;
+    v_booking   BIGINT;
+    v_refund_id BIGINT;
+    v_variant   BIGINT;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:studio_only';
+
+    SELECT o.order_id, o.order_no, o.order_total
+      INTO v_order_id, v_order_no, v_total
+      FROM fn_place_order(
+               1,
+               'idem-c2c-008-combo-refund',
+               jsonb_build_array(jsonb_build_object(
+                   'variant_id', v_variant, 'quantity', 1, 'visit_date', current_date + 12)),
+               3,
+               jsonb_build_object('name', '赵小红'),
+               NULL,
+               jsonb_build_array(
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'holder_name', 'value', '赵小红'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'id_number',  'value', '110101199002022345'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'holder_name', 'value', '钱小红'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'id_number',  'value', '110101199002022346'),
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'holder_name', 'value', '孙小红'),
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'dob',        'value', '2019-03-11'))
+           ) o;
+
+    IF v_order_id IS NULL THEN
+        RAISE EXCEPTION '组合套餐（待退款）下单失败';
+    END IF;
+
+    PERFORM fn_record_payment(v_order_id, 'wechat', v_total, 'CNY', 'wechat', 'WX88000008');
+    PERFORM fn_create_bookings(v_order_id);
+
+    -- 出券（和 18.4 同一个配方，不同票码）
+    -- 预订的单位是源 SKU：成人与儿童共用一个参数化 SKU → 一条预订、三张券
+    SELECT min(id) INTO v_booking
+      FROM booking b
+     WHERE b.order_id = v_order_id;
+
+    IF v_booking IS NULL THEN
+        RAISE EXCEPTION '组合套餐（待退款）没有预订';
+    END IF;
+
+    PERFORM fn_request_booking(v_booking);
+
+    PERFORM fn_complete_booking(
+        v_booking,
+        'confirmed',
+        'ZWO-BK-FAM2-001',
+        jsonb_build_object('bookingRef', 'ZYX-BK-FAM2-001', 'status', 'OK'),
+        NULL, NULL, ARRAY['ZWO99201','ZWO99202','ZWO99203']);
+
+    -- 退款：发起 → 放行 → 完成
+    SELECT r.refund_id INTO v_refund_id
+      FROM fn_request_refund(v_order_id, v_total, '组合套餐整单退款', 'seed', 'idem-refund-combo-001') r;
+
+    IF v_refund_id IS NULL THEN
+        RAISE EXCEPTION '组合套餐退款发起失败';
+    END IF;
+
+    PERFORM fn_approve_refund(v_refund_id, 'seed');
+    PERFORM fn_complete_refund(v_refund_id, TRUE, 'ZWO-RF-FAMILY-001');
+
+    -- ---- 断言：整单退，事实一起改 ----
+    IF (SELECT status FROM sales_order WHERE id = v_order_id) <> 'refunded' THEN
+        RAISE EXCEPTION '组合套餐退款后订单应为 refunded，实际 %',
+          (SELECT status FROM sales_order WHERE id = v_order_id);
+    END IF;
+
+    IF (SELECT count(*) FROM voucher WHERE order_id = v_order_id AND status = 'refunded') <> 3 THEN
+        RAISE EXCEPTION '组合套餐退款应作废 3 张券，实际 % 张',
+          (SELECT count(*) FROM voucher WHERE order_id = v_order_id AND status = 'refunded');
+    END IF;
+
+    IF (SELECT count(*) FROM booking WHERE order_id = v_order_id AND status = 'cancelled') <> 1 THEN
+        RAISE EXCEPTION '组合套餐退款应取消 1 条预订（同一个源 SKU 只订了一次），实际 % 条',
+          (SELECT count(*) FROM booking WHERE order_id = v_order_id AND status = 'cancelled');
+    END IF;
+
+    -- 预占：voided（卖过又收回），兑现量仍是原数 —— 事实不许被改写
+    IF (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id AND status = 'voided') <> 2 THEN
+        RAISE EXCEPTION '组合套餐退款应收回 2 条预占，实际 % 条',
+          (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id AND status = 'voided');
+    END IF;
+
+    IF (SELECT count(*) FROM inventory_hold
+         WHERE order_id = v_order_id AND status = 'voided' AND consumed_quantity <> quantity) <> 0 THEN
+        RAISE EXCEPTION '组合套餐退款后预占的兑现量必须仍是原数（卖出的事实不许被改写）';
+    END IF;
+END $$;
+
+-- -------------------------------------------------------------------------------------
+-- 18.6 第二张套餐：2 日成人 + 1 日儿童（异构的真正难点）
+--
+-- 第一张套餐（2 份一日成人 + 1 份一日儿童）两个成分的窗口一样长 ——
+-- 「组合的有效期 = 成分窗口的并集」在它身上看不出差别（并集 = 1 天）。
+--
+-- 这一张不一样：
+--   - 有效期：成人是两日票、儿童是一日票 → 并集 = 2 天
+--     （不是 1 天，也不是「2+1=3 天」）；
+--   - 源 SKU：两个（ZWO-2D-BASE 顶成人、ZWO-1D-BASE 顶儿童），
+--     同一个源（自由行），两个 SKU —— 这正是方向 B 的样子；
+--   - C 端：日历格子的有效期终点必须是「格子日期 + 2 天」，
+--     前端不许自己加一天。
+--
+-- 有了这一张，「组合的有效期 = 并集」这条口径才真的被验过：
+-- 把规则改成「取最短」或「写死 1 天」，这里立刻红。
+-- -------------------------------------------------------------------------------------
+INSERT INTO product_variant (product_id, variant_code, variant_key, title, variant_role, ticket_type_id, status, sort_order)
+VALUES (6,'USJ-FAMILY-2A2D1C','family:2adult2d:1child1d:studio_only','家庭套票 · 2 成人（两日）+ 1 儿童（一日）（工作室之旅）','combo',NULL,'active',91);
+
+-- 成分声明：2 份两日成人 + 1 份一日儿童
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type, quantity, price_policy, sort_order)
+SELECT pv.id, 14, 'included', 2, '{}', 10
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult2d:1child1d:studio_only';
+
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type, quantity, price_policy, sort_order)
+SELECT pv.id, 10, 'included', 1, '{}', 20
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult2d:1child1d:studio_only';
+
+-- 源侧配方：两个源 SKU，同一个源（自由行）
+INSERT INTO supplier_variant_composition (product_variant_id, component_variant_id, supplier_variant_id, quantity, status)
+SELECT pv.id, 14, 23, 2, 'active'
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult2d:1child1d:studio_only';
+
+INSERT INTO supplier_variant_composition (product_variant_id, component_variant_id, supplier_variant_id, quantity, status)
+SELECT pv.id, 10, 21, 1, 'active'
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult2d:1child1d:studio_only';
+
+DO $$
+DECLARE
+    v_variant BIGINT;
+    v_price   RECORD;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult2d:1child1d:studio_only';
+
+    IF v_variant IS NULL THEN
+        RAISE EXCEPTION '第二张套餐变体没建起来';
+    END IF;
+
+    -- 成分的窗口不一样：两日成人 + 一日儿童
+    IF fn_variant_validity_days(14) <> 2 OR fn_variant_validity_days(10) <> 1 THEN
+        RAISE EXCEPTION '成分的有效期不对：两日成人应为 2 天（实际 %），一日儿童应为 1 天（实际 %）',
+          fn_variant_validity_days(14), fn_variant_validity_days(10);
+    END IF;
+
+    -- 组合的窗口 = 并集 = 最长的那个 = 2 天
+    IF fn_variant_validity_days(v_variant) <> 2 THEN
+        RAISE EXCEPTION '组合的有效期应为 2 天（成分窗口的并集），实际 % 天',
+          fn_variant_validity_days(v_variant);
+    END IF;
+
+    -- 成本 = 2 × 两日成人 + 1 × 一日儿童
+    SELECT * INTO v_price
+      FROM fn_price_variant(v_variant, current_date + 12, 1, 1);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '第二张套餐定价失败（配方不齐 / 成分缺价 / 跨源 / 不同场次）';
+    END IF;
+
+    IF v_price.cost_price <> 2130.00 THEN
+        RAISE EXCEPTION '第二张套餐成本算错：期望 2130.00，实际 %', v_price.cost_price;
+    END IF;
+
+    IF v_price.sell_price <> 2470.80 THEN
+        RAISE EXCEPTION '第二张套餐售价算错：期望 2470.80，实际 %', v_price.sell_price;
+    END IF;
+END $$;
+
+-- -------------------------------------------------------------------------------------
+-- -------------------------------------------------------------------------------------
+-- 18.7 第三张套餐：跨币种的一张（源侧日元，我们卖人民币）
+--
+-- 前两张套餐的成分都在人民币源上，售价 = Σ 成分价，没有折算这回事。
+-- 这一张不一样：成分的源价是**日元**（goodfellows_jtb 的东京晴空塔快速通行证），
+-- 我们卖的是人民币 —— 成本要折算，折算的留痕必须能独立复算。
+--
+-- 组合的顶层没有单一源币种，所以它的售价行上 fx_rate / fx_as_of 是空的
+-- （那是「这里没有单一的值」，不是「同币种、汇率 1」）。
+-- 逐成分的折算留痕在 rule->'combo' 里：
+--
+--   {"currency": "JPY", "fx_rate": 0.0464..., "fx_as_of": "2026-01-01", ...}
+--
+-- 这就是为什么这条路径需要自己的门禁：普通可售单元的折算留痕由不变量 45 复查
+-- （它按 cost_source_product_id join 源价行），而组合的 cost_source_product_id 是空的 ——
+-- 不变量 45 直接跳过组合。留痕没人复查 = 留了个假日期都没人知道。
+-- 不变量 92 专门查这件事。
+-- -------------------------------------------------------------------------------------
+INSERT INTO product_variant (product_id, variant_code, variant_key, title, variant_role, ticket_type_id, status, sort_order)
+VALUES (2,'JP-SKYTREE-FAMILY-2A1C','jp:family:2adult:1child','东京晴空塔家庭票 · 2 成人 + 1 儿童','combo',NULL,'active',80);
+
+-- 成分声明：2 份成人 + 1 份儿童
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type, quantity, price_policy, sort_order)
+SELECT pv.id, 3, 'included', 2, '{}', 10
+  FROM product_variant pv
+ WHERE pv.variant_key = 'jp:family:2adult:1child';
+
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type, quantity, price_policy, sort_order)
+SELECT pv.id, 4, 'included', 1, '{}', 20
+  FROM product_variant pv
+ WHERE pv.variant_key = 'jp:family:2adult:1child';
+
+-- 源侧配方：两个源 SKU，同一个源（goodfellows_jtb，源币种 JPY）
+INSERT INTO supplier_variant_composition (product_variant_id, component_variant_id, supplier_variant_id, quantity, status)
+SELECT pv.id, 3, 9, 2, 'active'
+  FROM product_variant pv
+ WHERE pv.variant_key = 'jp:family:2adult:1child';
+
+INSERT INTO supplier_variant_composition (product_variant_id, component_variant_id, supplier_variant_id, quantity, status)
+SELECT pv.id, 4, 12, 1, 'active'
+  FROM product_variant pv
+ WHERE pv.variant_key = 'jp:family:2adult:1child';
+
+DO $$
+DECLARE
+    v_variant BIGINT;
+    v_price   RECORD;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'jp:family:2adult:1child';
+
+    IF v_variant IS NULL THEN
+        RAISE EXCEPTION '跨币种套餐变体没建起来';
+    END IF;
+
+    SELECT * INTO v_price
+      FROM fn_price_variant(v_variant, current_date + 7, 1, 1);
+
+    IF NOT FOUND OR v_price.sell_price IS NULL THEN
+        RAISE EXCEPTION '跨币种套餐定价失败（配方不齐 / 成分缺价 / 跨源 / 不同场次）';
+    END IF;
+
+    -- 源侧是日元，我们卖人民币 —— 折算必须真的发生
+    IF v_price.currency <> 'CNY' THEN
+        RAISE EXCEPTION '跨币种套餐的本行币种应为 CNY，实际 %', v_price.currency;
+    END IF;
+
+    -- 组合顶层没有单一源币种：源币种与源净价必须是空的
+    -- （填成 1 就是声称「没折算过」，那会让对账去查一份不存在的折算）
+    IF v_price.source_currency IS NOT NULL THEN
+        RAISE EXCEPTION '组合不应有单一源币种，实际 %', v_price.source_currency;
+    END IF;
+
+    -- 逐成分的折算留痕必须在，且必须带快照日期（折算过就得留痕）
+    IF NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(v_price.rule->'combo') c
+         WHERE c->>'currency' = 'JPY'
+           AND c->>'fx_as_of' IS NOT NULL
+           AND (c->>'fx_rate')::numeric <> 1)
+    THEN
+        RAISE EXCEPTION '跨币种套餐的成分折算留痕缺失（成分必须带 JPY 的折算因子与快照日期）';
+    END IF;
+END $$;
+
+-- 18.8 组合在 C 端：售价行 + 日历格子 + 读模型（015）
+--
+-- 组合在任何源侧都没有对应的商品条目 —— 它是我们自己的配方，
+-- 源侧的目录同步作业看不见它。所以它的售价行与日历格子由它自己推：
+--
+--   fn_sync_combo_calendar()  按成分的售价行推出组合的售价行（金额来自定价函数），
+--                              再按上架关系推出日历格子；
+--   fn_refresh_read_models()  把格子里的价格、有效期终点、构成写进读模型。
+--
+-- 做完这一步，C 端才画得出这两张家庭套餐：价格、成分、各自管几天。
+-- -------------------------------------------------------------------------------------
+SELECT * FROM fn_sync_combo_calendar();
+SELECT * FROM fn_refresh_read_models();
+
+DO $$
+DECLARE
+    v_combo        BIGINT := (SELECT id FROM product_variant WHERE variant_key = 'family:2adult:1child:studio_only');
+    v_combo_mixed  BIGINT := (SELECT id FROM product_variant WHERE variant_key = 'family:2adult2d:1child1d:studio_only');
+    v_composition  INT;
+    v_feed_rows    INT;
+BEGIN
+    -- 组合必须有一行售价（金额来自定价函数，不是手写的）
+    IF (SELECT count(*) FROM price_calendar
+         WHERE product_variant_id = v_combo AND status = 'active' AND sell_price IS NOT NULL) = 0 THEN
+        RAISE EXCEPTION '组合必须有一行带售价的售价行（C 端画不出它）';
+    END IF;
+
+    -- 日历格子上必须有价格：挂着一个卖不了的套餐 = 白占一个位置
+    IF (SELECT count(*) FROM c_variant_calendar
+         WHERE product_variant_id = v_combo AND status = 'available' AND price_min IS NULL) <> 0 THEN
+        RAISE EXCEPTION '组合的日历格子必须带价格';
+    END IF;
+
+    -- 读模型里必须看得见这张组合，且看得见它的成分
+    SELECT count(*) INTO v_feed_rows
+      FROM v_c_variant_feed
+     WHERE product_variant_id = v_combo AND is_combo AND component_count = 2;
+    IF v_feed_rows <> 1 THEN
+        RAISE EXCEPTION 'C 端读模型里必须有一行组合（2 个成分），实际 % 行', v_feed_rows;
+    END IF;
+
+    SELECT count(*) INTO v_composition
+      FROM v_c_variant_composition
+     WHERE product_variant_id = v_combo;
+    IF v_composition <> 2 THEN
+        RAISE EXCEPTION 'C 端读模型里必须有两个成分行，实际 % 行', v_composition;
+    END IF;
+
+    -- 第一张套餐：两个成分都是 1 天 → 组合 1 天
+    IF fn_variant_validity_days(v_combo) <> 1 THEN
+        RAISE EXCEPTION '组合的有效期应为 1 天（两个成分都是 1 天），实际 % 天',
+          fn_variant_validity_days(v_combo);
+    END IF;
+
+    -- 第二张套餐：并集 = 2 天，日历格子的有效期终点 = 格子日期 + 2 天
+    IF fn_variant_validity_days(v_combo_mixed) <> 2 THEN
+        RAISE EXCEPTION '第二张组合的有效期应为 2 天（成分窗口的并集），实际 % 天',
+          fn_variant_validity_days(v_combo_mixed);
+    END IF;
+
+    IF (SELECT count(*) FROM c_variant_calendar
+         WHERE product_variant_id = v_combo_mixed
+           AND valid_to IS DISTINCT FROM date + 2) <> 0 THEN
+        RAISE EXCEPTION '第二张组合的日历格子有效期终点必须是格子日期 + 2 天（前端不许自己加一天）';
+    END IF;
+
+    -- C 端必须看得见两个成分各自管几天
+    IF (SELECT count(*) FROM v_c_variant_composition
+         WHERE product_variant_id = v_combo_mixed
+           AND ((audience_code = 'adult' AND valid_days = 2 AND quantity = 2)
+             OR (audience_code = 'child' AND valid_days = 1 AND quantity = 1))) <> 2 THEN
+        RAISE EXCEPTION '第二张组合的成分（2 份两日成人 + 1 份一日儿童）必须出现在 C 端读模型里';
+    END IF;
 END $$;
 
 COMMIT;

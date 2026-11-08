@@ -7,7 +7,7 @@
 //   - 数据库不可用时 t.Skip 让 `make test` 在没有数据库的机器上照样全绿，
 //     门禁形同虚设。
 //
-// 现在每次测试都建一个带唯一后缀的临时库，载入 db/schema.sql（可选 db/seed.sql），
+// 现在每次测试都建一个带唯一后缀的临时库，走一遍迁移引擎（可选 db/seed.sql），
 // 测完删掉。要让「数据库不可用」变成失败而不是跳过，设 TC_REQUIRE_DB=1
 // （CI 必须设）。
 package testdb
@@ -19,13 +19,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ticket-center/internal/migrate"
+	"ticket-center/internal/store"
 )
 
 // Options 建库选项。
 type Options struct {
 	// Seed 为 true 时额外载入 db/seed.sql。
 	Seed bool
-	// Schema 为 true 时载入 db/schema.sql（默认 true）。
+	// NoSchema 为 true 时不建结构（默认建）。
 	NoSchema bool
 }
 
@@ -100,7 +103,9 @@ func New(t *testing.T, opts Options) string {
 
 	root := RepoRoot()
 	if !opts.NoSchema {
-		run(t, "-d", name, "-f", filepath.Join(root, "db", "schema.sql"))
+		if _, err := migrate.Apply(store.New(name), migrate.Options{Dir: filepath.Join(root, "db", "migrations")}); err != nil {
+			t.Fatalf("应用迁移失败：%v", err)
+		}
 	}
 	if opts.Seed {
 		run(t, "-d", name, "-f", filepath.Join(root, "db", "seed.sql"))

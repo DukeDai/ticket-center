@@ -117,6 +117,20 @@ func (d *DB) TableExists(name string) (bool, error) {
 	return v == "1", nil
 }
 
+// ExecScript 在单个 psql 会话里执行一段脚本，返回输出。
+//
+// 整段脚本共用一个会话，所以会话级的锁（advisory lock）和
+// 显式事务在脚本里都有效。脚本从 stdin 喂给 psql。
+func (d *DB) ExecScript(script string) (string, error) {
+	cmd := exec.Command(d.Bin, append(d.baseArgs(), "-f", "-")...)
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("脚本执行失败: %s", truncate(string(out), 4000))
+	}
+	return string(out), nil
+}
+
 // ExecFile 执行一个 SQL 文件。
 func (d *DB) ExecFile(path string) error {
 	cmd := exec.Command(d.Bin, append(d.baseArgs(), "-f", path)...)
@@ -147,6 +161,31 @@ func CreateDatabase(bin, host, name string) error {
 		return fmt.Errorf("建库失败: %s", truncate(string(out), 2000))
 	}
 	return nil
+}
+
+// PLError 把 psql 的报错整理成一句人话。
+//
+// psql 的输出长这样：
+//
+//	psql:... ERROR:  变体 9 在 2026-11-18 没有可售价格（...）
+//
+// 这里把 ERROR 后面那句抠出来，其余噪音丢掉 —— 调用方要的是「卡在哪」。
+func PLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if i := strings.Index(msg, "ERROR:"); i >= 0 {
+		rest := msg[i+len("ERROR:"):]
+		if j := strings.Index(rest, "\n"); j >= 0 {
+			rest = rest[:j]
+		}
+		rest = strings.TrimSpace(rest)
+		if rest != "" {
+			return fmt.Errorf("%s", rest)
+		}
+	}
+	return err
 }
 
 // Quote 把值转成 SQL 字面量。
