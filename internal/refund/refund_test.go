@@ -398,6 +398,9 @@ func TestRefundCompleteReplayIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("发起退款失败：%v", err)
 	}
+	if _, err := svc.ApproveRefund(res.RefundID, "boss@test"); err != nil {
+		t.Fatalf("放行退款失败：%v", err)
+	}
 	req := refund.CompleteRequest{RefundID: res.RefundID, Success: true, SupplierRefundID: "EXT-RF-002"}
 	if _, err := svc.CompleteRefund(req); err != nil {
 		t.Fatalf("落退款结果失败：%v", err)
@@ -436,6 +439,9 @@ func TestRefundCompleteFailureRestoresOrderToPreviousStatus(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("发起退款失败：%v", err)
+	}
+	if _, err := svc.ApproveRefund(res.RefundID, "boss@test"); err != nil {
+		t.Fatalf("放行退款失败：%v", err)
 	}
 	comp, err := svc.CompleteRefund(refund.CompleteRequest{
 		RefundID:     res.RefundID,
@@ -543,6 +549,9 @@ func TestRefundTwiceOnSameOrderIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("发起退款失败：%v", err)
 	}
+	if _, err := svc.ApproveRefund(res.RefundID, "boss@test"); err != nil {
+		t.Fatalf("放行退款失败：%v", err)
+	}
 	if _, err := svc.CompleteRefund(refund.CompleteRequest{RefundID: res.RefundID, Success: true}); err != nil {
 		t.Fatalf("落退款结果失败：%v", err)
 	}
@@ -557,6 +566,47 @@ func TestRefundTwiceOnSameOrderIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "已经退过款") {
 		t.Fatalf("报错要说清是已经退过款，实际：%v", err)
+	}
+	invariantsGreen(t, db)
+}
+
+// TestRefundCannotBeCompletedWithoutApproval 守住「放行是退款里的一步」。
+//
+// 以前完成退款只拦终态（succeeded / failed / rejected），requested 状态的
+// 退款能被直接结掉 —— 那放行这一步就形同虚设，谁都能把钱退出去。
+func TestRefundCannotBeCompletedWithoutApproval(t *testing.T) {
+	db := seeded(t)
+	o := paidOrder(t, db, "rf-noapprove-001", "ALI-RF-NOAPPROVE")
+	svc := refund.New(db)
+
+	res, err := svc.RequestRefund(refund.Request{
+		OrderID:        o.ID,
+		Amount:         o.Total,
+		IdempotencyKey: "RF-KEY-NOAPPROVE",
+	})
+	if err != nil {
+		t.Fatalf("发起退款失败：%v", err)
+	}
+
+	_, err = svc.CompleteRefund(refund.CompleteRequest{
+		RefundID:         res.RefundID,
+		Success:          true,
+		SupplierRefundID: "EXT-RF-NOAPPROVE",
+	})
+	if err == nil {
+		t.Fatal("没放行的退款不该能被完成")
+	}
+	if !strings.Contains(err.Error(), "不能完成") {
+		t.Fatalf("报错要说清是状态不对，实际：%v", err)
+	}
+
+	// 钱没退，状态就不许提前改：订单还挂在 refunding。
+	status, err := db.Scalar(`SELECT status FROM sales_order WHERE id = ` + store.Quote(o.ID) + `;`)
+	if err != nil {
+		t.Fatalf("读订单状态失败：%v", err)
+	}
+	if status != "refunding" {
+		t.Fatalf("订单状态应该还是 refunding，实际 %s", status)
 	}
 	invariantsGreen(t, db)
 }

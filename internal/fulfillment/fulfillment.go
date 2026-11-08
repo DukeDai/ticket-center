@@ -286,7 +286,8 @@ func (s *Service) RecordAttempt(req AttemptRequest) (*Attempt, error) {
 type Voucher struct {
 	VoucherID int64
 	VoucherNo string
-	// Code 是票码（源侧给的；源侧没给就用我们自己的券号）。
+	// Code 是票码。源侧给了就用源侧的；没给就自己生成一个随机码 ——
+	// 券号是连号的，当票码用等于把闸机的钥匙公开。
 	Code string
 	// HolderSequence 是这张券对应第几名持票人（按团报价时是 1，权益含全部份数）。
 	HolderSequence int

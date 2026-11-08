@@ -256,8 +256,31 @@ render();
 """
 
 
+# 页面里所有动态值都来自源报文 —— 供应商是不可信的。
+# 页面的 HTML 是模板字符串拼出来再塞进 innerHTML 的，所以每个插值点都
+# 得是编码过的值。在边界上编码一次：进页面之前把数据里的每个字符串
+# （含键名）都转义，之后所有 ${...} 插值都是安全的。
+# 这比在五十多个插值点各写一遍编码更不容易漏 —— 漏一个就是一个 XSS。
+_HTML_ESC = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}
+
+
+def _esc_text(s):
+    return "".join(_HTML_ESC.get(ch, ch) for ch in s)
+
+
+def _esc_tree(obj):
+    """递归转义数据里的每个字符串（字典的键也转义）。"""
+    if isinstance(obj, str):
+        return _esc_text(obj)
+    if isinstance(obj, list):
+        return [_esc_tree(x) for x in obj]
+    if isinstance(obj, dict):
+        return {_esc_text(k): _esc_tree(v) for k, v in obj.items()}
+    return obj
+
+
 def render(data):
-    payload = json.dumps(data, ensure_ascii=False).replace('</', '<\\/')
+    payload = json.dumps(_esc_tree(data), ensure_ascii=False).replace('</', '<\\/')
     return """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>

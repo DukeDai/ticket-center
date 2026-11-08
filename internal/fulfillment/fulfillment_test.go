@@ -1,6 +1,7 @@
 package fulfillment_test
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -1098,4 +1099,74 @@ func invariantActual(t *testing.T, db *store.DB, seq int) int {
 		t.Fatalf("不变量 %d 的 actual 不是整数：%q", seq, s)
 	}
 	return n
+}
+
+// TestIssuedVoucherWithoutSourceCodeGetsUnpredictableCode 守住「票码不许是连号派生的」。
+//
+// 源侧没给票码时我们自己生成。以前生成的是券号（VC + 日期 + 序列）——
+// 连号的，猜得到。票码是闸机认的东西，不能猜。
+func TestIssuedVoucherWithoutSourceCodeGetsUnpredictableCode(t *testing.T) {
+	db := seeded(t)
+	o := placeOrder(t, db, "ff-code-001", 9, 2)
+	svc := fulfillment.New(db)
+
+	if _, err := svc.RecordPayment(fulfillment.PaymentRequest{
+		OrderID: o.ID, Method: "alipay", Amount: o.Total, Currency: o.Currency,
+		Provider: "alipay", ProviderTxnID: "ALI-CODE-001",
+	}); err != nil {
+		t.Fatalf("支付失败：%v", err)
+	}
+	bookings, err := svc.CreateBookings(o.ID)
+	if err != nil {
+		t.Fatalf("建预订失败：%v", err)
+	}
+	b := bookings[0].BookingID
+	if _, err := svc.RequestBooking(b, map[string]any{"resource": "x"}); err != nil {
+		t.Fatalf("发起预订失败：%v", err)
+	}
+	if _, err := svc.RecordAttempt(fulfillment.AttemptRequest{
+		BookingID: b, Request: map[string]any{"resource": "x"},
+		Response: map[string]any{"status": "OK"}, HTTPStatus: 200, LatencyMS: 120,
+	}); err != nil {
+		t.Fatalf("归档尝试失败：%v", err)
+	}
+	// 源侧没给票码 —— Codes 留空。
+	done, err := svc.CompleteBooking(fulfillment.CompleteRequest{
+		BookingID:         b,
+		Status:            "confirmed",
+		ExternalBookingID: "EXT-BK-CODE-001",
+		Response:          map[string]any{"bookingRef": "EXT-BK-CODE-001"},
+		IssueVoucher:      true,
+	})
+	if err != nil {
+		t.Fatalf("落预订结果失败：%v", err)
+	}
+	if done.VoucherCount != 2 {
+		t.Fatalf("2 人应该发 2 张券，实际 %d 张", done.VoucherCount)
+	}
+
+	rows, err := db.Rows(`SELECT voucher_no, code FROM voucher
+                            WHERE order_id = ` + store.Quote(o.ID) + ` ORDER BY id;`)
+	if err != nil {
+		t.Fatalf("读券失败：%v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("应该有 2 张券，实际 %d 张", len(rows))
+	}
+	seen := map[string]bool{}
+	randomCode := regexp.MustCompile(`^VC-[0-9a-f]{32}$`)
+	for _, r := range rows {
+		code := r["code"]
+		if code == r["voucher_no"] {
+			t.Fatalf("票码不能是券号（连号的，猜得到）：券 %s 票码 %s", r["voucher_no"], code)
+		}
+		if !randomCode.MatchString(code) {
+			t.Fatalf("票码应该是随机码，实际 %s", code)
+		}
+		if seen[code] {
+			t.Fatalf("两张券的票码不该一样：%s", code)
+		}
+		seen[code] = true
+	}
+	invariantsGreen(t, db)
 }

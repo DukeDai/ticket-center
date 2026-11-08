@@ -349,8 +349,8 @@ func TestComboOrderIsOneItemWithComponentSources(t *testing.T) {
 
 	// 但源侧要收两次单 → 两行成分（成人 2 份、儿童 1 份）。
 	sources, err := db.Scalar(`SELECT count(*)::text FROM sales_order_item_source
-	                            WHERE order_item_id IN (SELECT id FROM sales_order_item WHERE order_id = `+
-		store.Quote(o.ID)+`);`)
+	                            WHERE order_item_id IN (SELECT id FROM sales_order_item WHERE order_id = ` +
+		store.Quote(o.ID) + `);`)
 	if err != nil {
 		t.Fatalf("读成分数失败：%v", err)
 	}

@@ -122,8 +122,8 @@ type HoldRequest struct {
 
 // HoldResult 是预占的结果。
 type HoldResult struct {
-	HoldID  int64
-	HoldNo  string
+	HoldID int64
+	HoldNo string
 	// Known 表示源侧有没有库存数据（false = 不知道还剩几张）。
 	Known bool
 	// AvailableQty 是源侧报的可售数。
@@ -279,23 +279,23 @@ func (s *Service) Expire(limit int64) (int64, error) {
 
 // HoldState 是一张预占的现状。
 type HoldState struct {
-	HoldID      int64
-	HoldNo      string
-	Status      string
-	Quantity    int64
-	Consumed    int64
-	ChannelID   int64
-	CartID      int64
-	OrderID     int64
-	VariantID   int64
-	SessionID   int64
-	TicketType  int64
-	SupplierID  int64
-	SupSession  int64
-	ExpiresAt   string
-	ReleasedAt  string
-	ReleaseWhy  string
-	CreatedAt   string
+	HoldID     int64
+	HoldNo     string
+	Status     string
+	Quantity   int64
+	Consumed   int64
+	ChannelID  int64
+	CartID     int64
+	OrderID    int64
+	VariantID  int64
+	SessionID  int64
+	TicketType int64
+	SupplierID int64
+	SupSession int64
+	ExpiresAt  string
+	ReleasedAt string
+	ReleaseWhy string
+	CreatedAt  string
 }
 
 // Show 读一张预占的现状。
