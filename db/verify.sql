@@ -434,6 +434,15 @@ SELECT product_variant_id, supplier_variant_id, date, session_id, source_session
 FROM v_bundle_gap
 ORDER BY product_variant_id, supplier_variant_id, date;
 
+\echo ''
+\echo '════════════════════════ K6. 套装池子上的需求对账（一单要了多少套 vs 落单时还剩多少） ═══════'
+-- 逐明细看是看不出来的：每条明细都记着自己那一份。
+-- 按池子加总才看得见超卖：需求 > 落单时看到的余量。
+SELECT order_id, supplier_session_id, source_ticket_type_id,
+       demand_sets, remaining_at_order, known_at_order
+FROM v_bundle_pool_demand
+ORDER BY order_id, supplier_session_id, source_ticket_type_id;
+
 
 \echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'
 -- 种子数据用了显式 id，identity 序列必须同步推进。

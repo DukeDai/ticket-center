@@ -1,6 +1,7 @@
 package order_test
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -497,6 +498,146 @@ func TestComboCannotOversellOneSharedSourcePool(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("两个成分抢同一个池子，加起来超了就不该放行")
+	}
+	if !strings.Contains(err.Error(), "库存不足") {
+		t.Fatalf("报错要说清是库存不足，实际：%v", err)
+	}
+}
+
+// bundleVariant 找出套装变体（源侧把整套当一个 SKU 卖）。
+//
+// 变体 id 是种子按顺序生成的，写死 id 的话种子一改测试就跟着错。
+func bundleVariant(t *testing.T, db *store.DB) int64 {
+	t.Helper()
+	s, err := db.Scalar(`SELECT id::text FROM product_variant
+	                      WHERE variant_key = 'family:2adult:1child:set';`)
+	if err != nil {
+		t.Fatalf("查套装变体失败：%v", err)
+	}
+	if s == "" {
+		t.Fatal("种子里没有套装变体")
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("套装变体 id 不是整数：%v", err)
+	}
+	return id
+}
+
+// bundlePool 找出套装的库存池：源场次 + 源票种。
+//
+// 池子是以「套」计的源票种。种子里那几笔套装订单已经落了预占，
+// 预占上记着池子在哪 —— 从那儿取最稳（不用猜是哪天、哪个源场次）。
+func bundlePool(t *testing.T, db *store.DB, variantID int64) (int64, int64) {
+	t.Helper()
+	s, err := db.Scalar(`SELECT h.supplier_session_id::text || '|' || h.source_ticket_type_id::text
+	                         FROM inventory_hold h
+	                        WHERE h.product_variant_id = ` + store.Quote(variantID) + `
+	                          AND h.source_ticket_type_id IS NOT NULL
+	                        LIMIT 1;`)
+	if err != nil {
+		t.Fatalf("查套装池子失败：%v", err)
+	}
+	if s == "" {
+		t.Fatal("种子里没有套装的库存池")
+	}
+	parts := strings.Split(s, "|")
+	sess, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		t.Fatalf("套装源场次 id 不是整数：%v", err)
+	}
+	stt, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		t.Fatalf("套装源票种 id 不是整数：%v", err)
+	}
+	return sess, stt
+}
+
+// bundleHolders 按套装的成分声明与实名要求，凑出 lines 行明细的实名。
+//
+// 每个成分要几份实名，就是套装声明里的份数；
+// 同一个成分出现在多行明细里时，实名必须带 item_index 指明是哪一行
+// （不分清楚就是把甲的实名绑到乙的票上）。
+func bundleHolders(t *testing.T, db *store.DB, variantID int64, lines int) []order.Holder {
+	t.Helper()
+	rows, err := db.Query(`SELECT p.component_variant_id::text, p.quantity::text, cr.field_code
+	                          FROM supplier_variant_bundle_part p
+	                          JOIN supplier_variant_bundle svb ON svb.id = p.bundle_id
+	                          JOIN checkout_requirement cr
+	                            ON cr.product_variant_id = p.component_variant_id
+	                         WHERE svb.product_variant_id = ` + store.Quote(variantID) + `
+	                           AND svb.status = 'active'
+	                           AND cr.required
+	                         ORDER BY p.id, cr.sort_order;`)
+	if err != nil {
+		t.Fatalf("查套装实名要求失败：%v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("套装没有实名要求")
+	}
+
+	out := []order.Holder{}
+	for line := 1; line <= lines; line++ {
+		for _, r := range rows {
+			comp, err := strconv.ParseInt(r[0], 10, 64)
+			if err != nil {
+				t.Fatalf("成分变体 id 不是整数：%v", err)
+			}
+			qty, err := strconv.ParseFloat(r[1], 64)
+			if err != nil {
+				t.Fatalf("成分份数不是数字：%v", err)
+			}
+			for seq := 1; seq <= int(qty); seq++ {
+				out = append(out, order.Holder{
+					VariantID: comp,
+					Sequence:  seq,
+					FieldCode: r[2],
+					Value:     "测试值" + r[2],
+					ItemIndex: line,
+				})
+			}
+		}
+	}
+	return out
+}
+
+func TestBundleCannotOversellItsOwnPoolAcrossLines(t *testing.T) {
+	db := seeded(t)
+	svc := order.New(db)
+	bundle := bundleVariant(t, db)
+	date := priceDate(t, db, bundle)
+	sess, stt := bundlePool(t, db, bundle)
+
+	// 池子只剩 1 套。
+	//
+	// 套装的池子是以「套」计的源票种，源侧报「还剩 2 套」，
+	// 减去我们已经兑现的那一套（种子那笔已出票的套装订单），还剩 1 套。
+	//
+	// 这一单买两行，每行一套 —— 两行抢的是**同一个池子**。
+	// 逐行看的话：每行都看见「还剩 1 套」，各要 1 套，两行都过 ——
+	// 加起来要 2 套，超卖一套。
+	// 按池子加总才看得见：2 > 1，当场拦住。
+	sql := fmt.Sprintf(`INSERT INTO inventory_snapshot
+	                     (supplier_session_id, supplier_ticket_type_id, session_date,
+	                      available_qty, sold_qty, status, captured_at)
+	                   VALUES (%s, %s, %s, 2, 0, 'available', now());`,
+		store.Quote(sess), store.Quote(stt), store.Quote(date))
+	if err := db.Exec(sql); err != nil {
+		t.Fatalf("铺库存快照失败：%v", err)
+	}
+
+	_, err := svc.Place(order.Request{
+		ChannelID:      1,
+		CustomerID:     3,
+		IdempotencyKey: "test-bundle-oversell-001",
+		Items: []order.Item{
+			{VariantID: bundle, Quantity: 1, VisitDate: date},
+			{VariantID: bundle, Quantity: 1, VisitDate: date},
+		},
+		Holders: bundleHolders(t, db, bundle, 2),
+	})
+	if err == nil {
+		t.Fatal("同一个套装池子只剩 1 套，订两套就不该放行")
 	}
 	if !strings.Contains(err.Error(), "库存不足") {
 		t.Fatalf("报错要说清是库存不足，实际：%v", err)

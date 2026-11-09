@@ -828,6 +828,7 @@ func cmdStockShow(args []string) error {
 	dbName := fs.String("db", "", "目标库")
 	supplierSessionID := fs.Int64("supplier-session", 0, "源侧场次 id")
 	ticketTypeID := fs.Int64("ticket-type", 0, "票种 id（0 表示不按票种过滤）")
+	sourceTicketTypeID := fs.Int64("source-ticket-type", 0, "源票种 id（套装的池子按这个查；0 表示不按源票种查）")
 	jsonOut := fs.String("json", "", "结构化结果导出路径")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -836,7 +837,14 @@ func cmdStockShow(args []string) error {
 		return fmt.Errorf("stock show 需要 --supplier-session")
 	}
 	svc := inventory.New(store.New(fulfillDB(*dbName)))
-	av, err := svc.Available(*supplierSessionID, *ticketTypeID)
+	var av *inventory.Availability
+	var err error
+	if *sourceTicketTypeID != 0 {
+		// 套装：池子是以套计的源票种，按源票种查才问得到这个池子。
+		av, err = svc.AvailableBySourceTicketType(*supplierSessionID, *sourceTicketTypeID)
+	} else {
+		av, err = svc.Available(*supplierSessionID, *ticketTypeID)
+	}
 	if err != nil {
 		return err
 	}
@@ -1065,6 +1073,7 @@ const usageRedeem = `  tc-connect redeem     scan     --db name (--code PFT90001
 `
 
 const usageStock = `  tc-connect stock      show     --db name --supplier-session 5 [--ticket-type 1]
+                                  [--source-ticket-type 15]
                                   [--json out.json]
 `
 

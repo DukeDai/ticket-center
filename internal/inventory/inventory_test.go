@@ -2,6 +2,7 @@ package inventory_test
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,16 @@ import (
 //   - 并发靠锁：两个并发预占抢最后一张，只能有一个成功；
 //   - 预占是事实：每条订单明细都有一条预占记录，量对得上；
 //   - 订单不成了（取消 / 超时 / 退款）预占要撤销，票要放回池子。
+
+// mustInt 把查出来的 id 字符串读成整数。
+func mustInt(t *testing.T, s string) int64 {
+	t.Helper()
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("id 不是整数：%v", err)
+	}
+	return n
+}
 
 func seeded(t *testing.T) *store.DB {
 	t.Helper()
@@ -484,5 +495,68 @@ func TestInventoryInvariantsStayGreen(t *testing.T) {
 	}
 	if bad != "0" {
 		t.Fatalf("不变量有 %s 条没通过", bad)
+	}
+}
+
+// 按源票种查库存，池子不许跨票种相加。
+//
+// 套装的池子是以「套」计的源票种，它不对应任何规范票种。
+// 源场次 3 里有两个源票种：票种 3 源侧报了 8 张，票种 4 源侧没报。
+// 查票种 4 时如果兜底到别的口径，就会把票种 3 的 8 张算成票种 4 的 ——
+// 那不是票种 4 的池子，数字越大越超卖。
+//
+// 源侧没报这个票种的库存，正确答案是「不知道」，不是「还有 8 张」。
+func TestSourceTicketTypePoolIsNotSummedWithOtherTicketTypes(t *testing.T) {
+	db := seeded(t)
+
+	reported, err := db.Scalar(`SELECT stt.id::text
+	                              FROM supplier_ticket_type stt
+	                             WHERE stt.supplier_product_id = (SELECT supplier_product_id
+	                                                            FROM supplier_session WHERE id = 3)
+	                               AND EXISTS (SELECT 1 FROM inventory_snapshot s
+	                                            WHERE s.supplier_session_id = 3
+	                                              AND s.supplier_ticket_type_id = stt.id)
+	                             LIMIT 1;`)
+	if err != nil {
+		t.Fatalf("查源票种失败：%v", err)
+	}
+	unreported, err := db.Scalar(`SELECT stt.id::text
+	                                FROM supplier_ticket_type stt
+	                               WHERE stt.supplier_product_id = (SELECT supplier_product_id
+	                                                              FROM supplier_session WHERE id = 3)
+	                                 AND NOT EXISTS (SELECT 1 FROM inventory_snapshot s
+	                                                  WHERE s.supplier_session_id = 3
+	                                                    AND s.supplier_ticket_type_id = stt.id)
+	                               LIMIT 1;`)
+	if err != nil {
+		t.Fatalf("查源票种失败：%v", err)
+	}
+	if reported == "" || unreported == "" {
+		t.Fatalf("源场次 3 该有一个报了库存的票种和一个没报的票种，实际 %q / %q", reported, unreported)
+	}
+
+	// 报了库存的那个票种：可用数就是它自己的快照。
+	av, err := svc(t, db).AvailableBySourceTicketType(3, mustInt(t, reported))
+	if err != nil {
+		t.Fatalf("查库存失败：%v", err)
+	}
+	if !av.Known {
+		t.Fatal("源侧报了这个票种的库存，应该知道可售数")
+	}
+	if av.AvailableQty != 8 {
+		t.Fatalf("源票种 %s 的可用数应该是它自己的快照 8，实际 %d", reported, av.AvailableQty)
+	}
+
+	// 没报的那个票种：不知道。
+	av2, err := svc(t, db).AvailableBySourceTicketType(3, mustInt(t, unreported))
+	if err != nil {
+		t.Fatalf("查库存失败：%v", err)
+	}
+	if av2.Known {
+		t.Fatalf("源侧没报源票种 %s 的库存，应该说不知道，实际报 %d 张",
+			unreported, av2.AvailableQty)
+	}
+	if av2.AvailableQty != 0 || av2.RemainingQty != 0 {
+		t.Fatalf("不知道的时候不该报数字：可用 %d / 剩余 %d", av2.AvailableQty, av2.RemainingQty)
 	}
 }

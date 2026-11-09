@@ -2,8 +2,8 @@
 
 > 物理模型：`db/migrations/`（PostgreSQL 15+；基线 `001_baseline.sql` + 后续迁移文件）
 > 建库：`tc-connect migrate --db <库>`（迁移引擎：账本 + 内容校验和 + 幂等 + 并发互斥）
-> 验收：`db/verify.sql`（99 条不变量断言 + 17 组业务视图）
-> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 48 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列。
+> 验收：`db/verify.sql`（101 条不变量断言 + 17 组业务视图）
+> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 50 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列。
 
 ---
 
@@ -229,7 +229,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 99 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条） |
+| `v_invariant_checks` | 101 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条 + bundle 库存侧 2 条） |
 | `v_invariant_checks_core` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
@@ -255,6 +255,8 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_variant_bundle` | 套装的供给形态一行看清（规范变体 ← 整套源 SKU + 成分构成 + 有效期窗口 + 缺口诊断） |
 | `v_variant_bundle_part` | 套装成分明细（一行一个成分：份数 / 人群编码 / 各自管几天） |
 | `v_invariant_checks_bundle` | 套装侧 5 条有没有被破坏？（形态唯一 / 成分与声明对得上 / 有效期盖得住 / 成本分摊守恒 / 入场份数守恒） |
+| `v_bundle_pool_demand` | 套装池子上的需求对账（订单 × 池子：需求套数 / 落单时还剩多少 / 当时知不知道） |
+| `v_invariant_checks_bundle_020` | 套装库存侧 2 条有没有被破坏？（池子不跨源票种相加 / 需求按池子加总不许超卖） |
 | `v_invariant_checks_core_017` | 供给侧 45 条里 34 与 43 按套装口径修订后的那一版 |
 | `v_invariant_checks_inventory_017` | 库存预占侧 4 条里 69 与 72 按套装口径修订后的那一版 |
 | `v_invariant_checks_validity_017` | 有效期侧 3 条里 75 按套装口径修订后的那一版 |
@@ -616,6 +618,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `017_supplier_bundle.sql` | `supplier_variant_bundle` / `supplier_variant_bundle_part` 两张表 + 三个守卫触发器（形态唯一 / 成分归属 / 成分合法性）+ `fn_bundle_components()` + `fn_price_variant()` / `fn_place_order()` / `fn_create_bookings()` / `fn_sync_combo_calendar()` 的套装分支（`CREATE OR REPLACE`）+ `fn_available_qty()` / `fn_reserve_qty()` 加带 `source_ticket_type_id` 的重载 + `inventory_hold.source_ticket_type_id` 列+ `v_bundle_gap` / `v_variant_bundle` / `v_variant_bundle_part` + 不变量 95-99 新增、34 / 43 / 69 / 72 / 75 / 84 按套装口径重写 | 异构融合的第三种形态：源侧把整套当一个 SKU 卖。方向 A 的 `coverage` 看不出一个源 SKU 是「一整套」还是「一张谁都能用的票」—— 看不出来就不能猜，所以套装必须单独声明。套装的成本来自源侧那个整套报价（不重新选源）、预订的单位是套、库存扣源侧整套票种的池子、有效期由源侧声明且必须盖住成分窗口（见 §25） |
 | `018_booking_request_payload_merge.sql` | `fn_request_booking()` 整体替换（请求报文改成合并而不是覆盖） | `fn_create_bookings()` 写的「我们打算发出去的请求」原来会被接入层实际发出的那一份覆盖掉，而且参数默认值是 `'{}'` 不是 NULL，连「不传报文」都会把整列洗掉。套装的套数与入场份数就靠这两个字段区分，洗掉之后「预订的单位是套还是份」在库里没处可查，对账只能靠猜（见 §26） |
 | `019_bundle_gap_days.sql` | `v_variant_bundle` 整体替换（缺口天数只数真卖不掉的那几天） | 缺口视图里混着「这一天能卖」（原因为空）的行，天数却把所有行都数进去 —— 套装天天能卖却报「有 N 天卖不掉」，理由还是空的，运营会去查一个不存在的问题 |
+| `020_bundle_inventory_scope.sql` | `fn_available_qty()` 三参重载整体替换（源票种范围收窄：源侧没报就说不知道）+ `fn_place_order()` 整体替换（套装预占按池子汇总）+ `v_bundle_pool_demand` + `v_invariant_checks_bundle_020` + `v_invariant_checks` 重建（不变量 100-101 新增） | 017 把套装走到了成交，但库存池上有两个洞：查套装余量时会掉到别的票种的数上（用儿童票的库存卖整套票），以及落单时逐明细各算各的（两条明细各要 1 套、池子只剩 1 套时两笔都放行 → 超卖）。两个洞都是**跨票种 / 跨明细加总的错**（见 §25.2） |
 
 读模型刷新写成一个 SQL 函数而不是散在调用方里，是有代价换来的：
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
@@ -748,7 +751,7 @@ CREATE VIEW v_invariant_checks AS
 - 并发：两个迁移进程同时跑，会话级互斥锁把它们串行化
 - `db/seed.sql` 完整装载（7 源 / 11 源商品 / 7 规范商品 / 11 映射 / 13 场次源绑定 / 6 订单 / 7 明细 / 6 预订 / 7 凭证 / 2 结算单 / 9 读模型卡片 / 11 日历格子 / 4 优惠券 / 4 购物车 / 4 库存预占 / 11 结算规格 / 10 持票人 / 6 评价 / 19 变体（含 2 张套餐）/ 25 源变体 / 29 覆盖映射 / 4 组合成分行）
 - `db/verify.sql` 全部视图正常输出
-- `v_invariant_checks` 99 条断言 **99/99 PASS**
+- `v_invariant_checks` 101 条断言 **101/101 PASS**
 - 状态机机制实测：非法流转（`expired → confirmed`）当场报错且数据未变；
   合法流转（`failed → pending`）写进去了，并在 `event_outbox` 留下 `BookingRetryScheduled`
 - C 端读模型漂移检测：9 张卡片全部 `drifted=f`（`drifted=true` 计数 0）
@@ -1286,9 +1289,10 @@ $$;
 
 ### 20.7 接不上的情况，说清楚
 
-源侧把整套套餐当**一个** SKU 卖的情况接不了。
-从 `coverage` 看不出一个源 SKU 是「一整套」还是「一张谁都能用的票」，
-看不出来就不能猜 —— 猜错就是「按 A 源的价格卖、按 B 源出票」。
+源侧把整套套餐当**一个** SKU 卖的情况，从 `coverage` 看不出来 ——
+看得出的是「一个源 SKU 覆盖多个可售单元」，不是「一个源 SKU 就是一整套」。
+猜错就是「按 A 源的价格卖、按 B 源出票」，所以这种形态单独声明，
+见 §25（`supplier_variant_bundle` + `supplier_variant_bundle_part`）。
 
 ### 20.8 唯一实现
 
@@ -1459,9 +1463,10 @@ GROUP BY s.supplier_variant_id, s.supplier_product_id, s.supplier_id,
 - 整张套餐的原子性（要么全出票、要么全退）取决于源侧的能力。
   我们这边只保证「所有成分都出票了才算履约完成」，
   退款时全部成分的预订 / 券 / 票额一起改。
-- 源侧把整套套餐当**一个** SKU 卖的情况接不了 ——
-  那从 `coverage` 看不出来（看得出的是「一个源 SKU 覆盖多个可售单元」，
-  不是「一个源 SKU 就是一整套」），看不出来就不能猜。
+- 源侧把整套套餐当**一个** SKU 卖的情况，从 `coverage` 看不出来
+  （看得出的是「一个源 SKU 覆盖多个可售单元」，不是「一个源 SKU 就是一整套」），
+  所以这种形态单独声明，见 §25：预订的单位是**套**（一条预订顶整套），
+  入场份数才是成分张数。
 
 ### 22.6 门禁
 
@@ -1626,7 +1631,7 @@ GROUP BY s.supplier_variant_id, s.supplier_product_id, s.supplier_id,
 | B（配方） | 一个可售单元由多个源 SKU 按数量组成 | `supplier_variant_composition` + `product_variant_relation.quantity` |
 | B（套装） | **一个源 SKU 把整套当一个 SKU 卖** | `supplier_variant_bundle` + `supplier_variant_bundle_part` |
 
-第三种形态以前接不了，理由写在 §20 末尾：从 `coverage` 看不出一个源 SKU 是
+第三种形态以前接不了，理由写在 §20.7：从 `coverage` 看不出一个源 SKU 是
 「一整套」还是「一张谁都能用的票」。两者都能覆盖住同一个可售单元，
 但成本、预订单位、库存池、有效期全都不一样 —— **看不出来就不能猜**。
 
@@ -1654,6 +1659,18 @@ GROUP BY s.supplier_variant_id, s.supplier_product_id, s.supplier_id,
 库存不按成分各扣各的，扣的是**源侧整套票种**那个池子：
 `fn_available_qty()` / `fn_reserve_qty()` 加了带 `source_ticket_type_id` 的重载，
 `inventory_hold` 加了同名列。预占一条，份数是套数。
+
+池子的取数有两条口径，是 020 补上的（017 的两个超卖口子）：
+
+| 口径 | 规则 | 门禁 |
+|---|---|---|
+| 取数不许跨源票种 | 指定源票种时，可售数只能来自**这个源票种自己的快照**。源侧没报这个票种的库存就是**不知道**（`known = false`、可售数为空），不许拿同一场次里别的票种的余量顶上 | 不变量 100 |
+| 需求按池子加总 | 落单时预占按**池子**汇总同一订单里所有套装的套数再比余量。逐明细各算各的看不见超卖：两条明细各记着「还剩 1 套」，各要 1 套，各自都过，合起来就是 2 套 | 不变量 101 |
+
+「不知道」的时候不拦单，但要把当时的可售数写进明细快照 ——
+返回 0 意味着「卖完了」，会让整个商品下架，比超卖更贵。
+对账看 `v_bundle_pool_demand`（订单 × 池子：需求套数 / 落单时还剩多少 /
+当时知不知道）。
 
 ### 25.3 有效期
 

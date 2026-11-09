@@ -408,7 +408,7 @@ Go、psql、脚本走的是同一条路。
 ### `tc-connect stock` / `tc-connect hold` — 可售数与预占
 
 ```bash
-./bin/tc-connect stock show  --db ticket_center --supplier-session 1 [--ticket-type 1] [--json out.json]
+./bin/tc-connect stock show  --db ticket_center --supplier-session 1 [--ticket-type 1] [--source-ticket-type 15] [--json out.json]
 ./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 \
                               --qty 2 --date 2026-11-18 [--cart 3] [--ttl 900] [--json out.json]
 ./bin/tc-connect hold release --db ticket_center --no HOLD001 [--reason cart_abandoned] [--json out.json]
@@ -430,6 +430,13 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 
 「不知道」不许当成 0：0 意味着卖完了，会让整个商品下架。
 不知道的时候下单不拦，但当时看到的数会写进明细的 `availability` 快照，事后对账用。
+
+套装的库存池是**源侧那个整套票种**，跟普通票种不是一个池子。
+`--source-ticket-type` 查的就是那个池子（Go 侧是
+`internal/inventory.AvailableBySourceTicketType`，走
+`fn_available_qty(session, NULL, source_ticket_type_id)`）。
+指定了源票种时，余量**只**来自这个票种自己的快照：源侧没报它就是
+「不知道」，不会拿同一场次里别的票种的余量顶上。
 
 `hold create` 的 `--no` 是幂等键：同键同内容重放返回同一张预占，
 同键异内容报错（重放一次预占等于凭空多占一份）。

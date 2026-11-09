@@ -99,6 +99,54 @@ func (s *Service) Available(supplierSessionID, ticketTypeID int64) (*Availabilit
 	}, nil
 }
 
+// AvailableBySourceTicketType 查一个**源票种**上还剩多少。
+//
+// 套装的池子是以「套」计的源票种，它不对应任何规范票种。
+// 拿规范票种去查会落到别的口径上（同一场次里别的票种的余量加在一起），
+// 那个数不是这个池子的数 —— 查出来的越大越超卖。
+//
+// 所以套装必须按源票种查：源侧没报这个票种的库存，就是「不知道」
+// （Known = false），不许拿别的池子顶。
+func (s *Service) AvailableBySourceTicketType(supplierSessionID, sourceTicketTypeID int64) (*Availability, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("查库存需要数据库连接")
+	}
+	if supplierSessionID == 0 {
+		return nil, fmt.Errorf("查库存需要源场次 id")
+	}
+	if sourceTicketTypeID == 0 {
+		return nil, fmt.Errorf("查库存需要源票种 id")
+	}
+	rows, err := s.db.Rows(fmt.Sprintf(
+		`SELECT known, COALESCE(available_qty, 0) AS available_qty,
+                COALESCE(committed_qty, 0) AS committed_qty,
+                COALESCE(remaining_qty, 0) AS remaining_qty,
+                COALESCE(sold_qty, 0) AS sold_qty,
+                COALESCE(held_qty, 0) AS held_qty,
+                COALESCE(source_status, '') AS source_status,
+                COALESCE(snapshot_at::text, '') AS snapshot_at
+           FROM fn_available_qty(%s, NULL, %s);`,
+		store.Quote(supplierSessionID),
+		store.Quote(sourceTicketTypeID)))
+	if err != nil {
+		return nil, store.PLError(err)
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("查库存没有返回结果")
+	}
+	r := rows[0]
+	return &Availability{
+		Known:        r["known"] == "t" || r["known"] == "true",
+		AvailableQty: parseInt(r["available_qty"]),
+		CommittedQty: parseInt(r["committed_qty"]),
+		RemainingQty: parseInt(r["remaining_qty"]),
+		SoldQty:      parseInt(r["sold_qty"]),
+		HeldQty:      parseInt(r["held_qty"]),
+		SourceStatus: r["source_status"],
+		SnapshotAt:   r["snapshot_at"],
+	}, nil
+}
+
 // ---------------------------------------------------------------- 预占
 
 // HoldRequest 是一次购物车预占。

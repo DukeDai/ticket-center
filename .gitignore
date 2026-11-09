@@ -8,6 +8,10 @@
 __pycache__/
 *.pyc
 
+# 编辑器交换文件
+*.swp
+*.swo
+
 # 会话记忆与工具缓存
 /.remember/
 
