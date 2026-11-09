@@ -80,6 +80,7 @@
 | `product` | ticket_type, media, translation, 属性值 | 单商品内 | 商品属性是同一份真相，不该跨商品写 |
 | `product_variant` | product_variant_option, product_variant_relation | 单变体内 | 一个可售组合的轴取值必须自洽；变体与源变体的覆盖关系独立于变体本身 |
 | `product_variant`（组合态） | product_variant_relation（`relation_type='included'`）, supplier_variant_composition | 单组合内 | 组合的组件声明与源侧配方必须逐项对得上；两侧数量不一致就是「少给一份」或「多卖一份」，必须在写配方时就报出来 |
+| `product_variant`（套装态） | supplier_variant_bundle, supplier_variant_bundle_part | 单套装内 | 套装是「源侧把整套当一个 SKU 卖」：它的成分声明与源侧整套报价必须对得上；形态还不许与配方态同时存在 —— 定价走哪条分支说不清，成本就会算两遍 |
 | `supplier_product` | supplier_ticket_type, supplier_variant, supplier_session | 单源商品内 | 源侧对象树，保证源结构完整不被拆散 |
 | `product_session` | product_session_source | 单场次内 | 一个场次的可供给源集合是原子的，改派要一致 |
 | `channel_listing` | channel_listing_source | 单上架内 | 上架与货源绑定必须同时生效 |
@@ -432,6 +433,39 @@ mappingId: 80041201-8004120101|2 + 80041201-8004120102|2 + 80041902-8004190201|1
 这条路径要自己的门禁（不变量 92）——
 组合的 `cost_source_product_id` 是空的，不变量 45 按那个字段 join 源价行，
 直接跳过组合，没人复查就等于留了个假快照日期都没人知道。
+
+#### 4.3.1 套装：源侧把整套当一个 SKU 卖
+
+异构融合到这一步有三种形态：
+
+| 方向 | 语义 | 模型 |
+|---|---|---|
+| A | 一个源 SKU 覆盖多个可售单元 | `supplier_variant_mapping.coverage` |
+| B（配方） | 一个可售单元由多个源 SKU 按数量组成 | `supplier_variant_composition` |
+| B（套装） | **一个源 SKU 把整套当一个 SKU 卖** | `supplier_variant_bundle` |
+
+第三种从 `coverage` 看不出来：一个源 SKU 覆盖住整个可售单元，
+可能是「一整套」，也可能是「一张谁都能用的票」。
+两者都能覆盖住，差别全在语义上 —— 成本、预订单位、库存池、有效期都不一样。
+**看不出来就不能猜**，所以套装单独声明（`supplier_variant_bundle` +
+`supplier_variant_bundle_part`），触发器挡住它同时又是配方态。
+
+**三个单位不许混**：售卖单位是**套**（订单明细的份数）、
+成分单位是**预订的单位**（一个源 SKU 一条预订）、
+入场份数是**发的券的张数**。一套「2 成人 + 1 儿童」= 1 套 / 3 份入场。
+不变量 99 守着这条：入场份数 = 套装声明的份数 × 套餐份数。
+
+**成本来自源侧那个整套报价**，不是成分单价相加，**也不重新路由**。
+分摊到成分只是为了对账（不变量 98：Σ 分摊 × 套数精确等于整套成本 × 套数）。
+
+**库存扣源侧整套票种的池子**，不是每个成分各扣各的：
+预占一条，份数是套数。
+
+**有效期是源侧声明的**（`supplier_variant_bundle.valid_days`），
+必须盖住成分窗口的并集（不变量 97）—— 盖不住就是第二天进不去。
+
+**缺口要说清**（`v_bundle_gap`）：没有源侧报价 / 没有规范场次 / 没绑源场次 /
+没有源侧票种 / 有效期盖不住 / 可售数未知。看不出来就说看不出来。
 
 ### 4.4 属性归一化：配置驱动而非代码分支
 

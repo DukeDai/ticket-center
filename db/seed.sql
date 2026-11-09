@@ -2015,6 +2015,609 @@ BEGIN
     END IF;
 END $$;
 
+-- =====================================================================================
+-- 19. 套装（异构融合方向 B 的第二种形状）：源侧一个 SKU 整套卖
+--
+-- 017 之前，「源侧把整套套餐当一个 SKU 卖」接不了 ——
+-- 从 coverage 看不出一个源 SKU 是「一整套」还是「一张谁都能用的票」，
+-- 看不出来就不能猜（硬约束 25 写明了这个代价）。
+--
+-- 017 把这个形状**表达**出来了：
+--   supplier_variant_bundle         套装头（一个可售单元 ← 一个源 SKU）
+--   supplier_variant_bundle_part    套装成分（这个套装里有几个什么、各几份）
+--
+-- 这一节是它的验证对象：
+--   套装：家庭套票 · 整套 = 2 份成人一日票 + 1 份儿童一日票
+--   源侧：Zowoyoo 的「家庭套票」是一个**独立的源 SKU**（不是那个参数化的一日票 SKU），
+--         一个价、一个源票种（套票）、一条预订。
+--
+-- 三个单位分开记（这一节最要紧的地方）：
+--   售卖单位 = 套   源侧卖的是套；定价按套、预占按套、预订按套
+--   成分单位 = 份   规范声明：2 份成人 + 1 份儿童
+--   入场份数 = 人   出券按人：3 张券
+--
+-- 与「配方组合」（第 18 节）的差别只有一处：源侧那个 SKU 是「一张票」还是「一整套」。
+-- 其余三条写路径（定价、预订、出券）共用同一套代码，差别只在「份数」这一个数上。
+--
+-- 订单走**真实函数**建，不手写 INSERT：
+--   fn_place_order → fn_record_payment → fn_create_bookings
+--   → fn_request_booking → fn_complete_booking（出券在最后一步里）
+-- 手写 INSERT 只能证明「种子数据长得对」，证明不了「代码跑得通」。
+-- =====================================================================================
+
+-- -------------------------------------------------------------------------------------
+-- 19.1 源侧：卖整套的那个 SKU
+--
+-- 它与第 16 节那个「参数化售卖方案」是**两个不同的源商品**：
+--   ZWO-1D-BASE  一张票（人群是购买时选的一档）
+--   ZWO-FAMILY-SET 一整套（2 成人 + 1 儿童，一个价）
+--
+-- 源侧报的库存也是以「套」计的：还有 5 套家庭套票。
+-- 这个数不对应任何规范票种 —— 所以套装的库存池挂在源票种上（017 新增的口径）。
+-- -------------------------------------------------------------------------------------
+INSERT INTO supplier_product (supplier_id, external_id, external_code, external_url, raw_title,
+                              raw_payload, source_attributes, availability_mode, content_hash, status, last_synced_at)
+VALUES (6,'ZWO-USJ-2002','ZWO2002','https://www.zowoyooglobal.com/product/2002','北京环球影城 家庭套票（2 成人 + 1 儿童）',
+  '{"goodsId":"ZWO-USJ-2002","goodsName":"北京环球影城 家庭套票","durationMinutes":600,"source":"aggregated","specList":[{"specId":"ZWO-FAMILY-SET","name":"家庭套票（2 成人 + 1 儿童）","price":1500.00,"options":{"package":"family:2adult:1child","audience":["adult","child"],"park":["studio_tour"]}}]}',
+  '{"source":"aggregated","specList":[{"specId":"ZWO-FAMILY-SET"}]}','pull_sync','h11','active',now());
+
+INSERT INTO product_mapping (supplier_product_id, supplier_id, product_id, match_type, confidence,
+                             match_evidence, is_primary, status, created_by)
+SELECT id, 6, 6, 'manual', 0.95,
+       '{"signals":["title_family"],"decided_by":"ops@demo"}', false, 'active', 'ops@demo'
+  FROM supplier_product
+ WHERE external_id = 'ZWO-USJ-2002';
+
+-- 源票种：套票这一个票种。库存池挂在它上面。
+INSERT INTO supplier_ticket_type (supplier_product_id, external_id, name, name_en, description,
+                                  age_rule, is_optional, raw_payload)
+SELECT sp.id, 'FAMILY-SET', '家庭套票（整套）', 'Family Set (2 Adult + 1 Child)',
+       '整套售卖：一个 SKU 一次入场三个名额（2 成人 + 1 儿童）',
+       '{}', false, '{"id":"FAMILY-SET","packageSize":3}'
+  FROM supplier_product sp
+ WHERE sp.external_id = 'ZWO-USJ-2002';
+
+-- 源变体：整套这个 SKU。
+INSERT INTO supplier_variant (supplier_product_id, external_variant_id, title, variant_attrs, status)
+SELECT sp.id, 'ZWO-FAMILY-SET', '家庭套票（2 成人 + 1 儿童）',
+       '{"audience":["adult","child"],"passType":["1d"],"parks":["studio_tour"],"package":"family:2adult:1child"}',
+       'active'
+  FROM supplier_product sp
+ WHERE sp.external_id = 'ZWO-USJ-2002';
+
+-- 源场次：与第 16 节那个场次同一天（同一个入园日），另一个源商品。
+INSERT INTO supplier_session (supplier_product_id, supplier_ticket_type_id, external_id, session_date,
+                              start_at, end_at, timezone, local_start_label, meeting_point, address,
+                              latitude, longitude, capacity, status, raw_payload)
+SELECT sp.id, stt.id, 'ZYX-D20261116-FAM', current_date+12,
+       (current_date+12)::timestamptz + interval '9 hours', NULL, 'Asia/Shanghai',
+       '09:00 - 入场当日', '环球影城 城市大道', '北京市通州区北京环球度假区',
+       39.856500, 116.665600, NULL, 'active',
+       '{"useDate":"2026-11-16","package":"FAMILY-SET"}'
+  FROM supplier_product sp
+  JOIN supplier_ticket_type stt ON stt.supplier_product_id = sp.id
+                                AND stt.external_id = 'FAMILY-SET'
+ WHERE sp.external_id = 'ZWO-USJ-2002';
+
+-- 场次源绑定：规范场次 7 ← 这个源场次（按源商品绑定，不按日期猜）。
+INSERT INTO product_session_source (product_session_id, supplier_session_id, supplier_id,
+                                    supplier_product_id, role, price_overlay, priority)
+SELECT ps.id, ss.id, 6, ss.supplier_product_id, 'fallback', '{}', 30
+  FROM supplier_session ss
+  JOIN product_session ps ON ps.product_id = 6 AND ps.session_date = ss.session_date
+ WHERE ss.external_id = 'ZYX-D20261116-FAM';
+
+-- 上架源绑定：这个源商品也能供这个商品（渠道 1 的上架关系）。
+INSERT INTO channel_listing_source (channel_listing_id, supplier_product_id, supplier_id,
+                                     priority, fallback_order, min_margin, enabled)
+SELECT cl.id, sp.id, 6, 30, 3, 0.1200, true
+  FROM channel_listing cl
+  JOIN supplier_product sp ON sp.external_id = 'ZWO-USJ-2002'
+ WHERE cl.channel_id = 1 AND cl.product_id = 6 AND cl.status = 'online';
+
+-- -------------------------------------------------------------------------------------
+-- 19.2 规范侧：套装变体 + 成分声明
+--
+-- 规范声明与配方组合共用同一条路（product_variant_relation，relation_type='included'）：
+-- 「卖的是 2 大 1 小」这句话对两种形态是同一句话。
+-- 差别在源侧：配方是「几个 SKU 各订几份」，套装是「一个 SKU 整套」。
+-- -------------------------------------------------------------------------------------
+INSERT INTO product_variant (product_id, variant_code, variant_key, title, variant_role,
+                             ticket_type_id, status, sort_order)
+VALUES (6,'USJ-FAMILY-2A1C-SET','family:2adult:1child:set',
+        '家庭套票 · 整套（2 成人 + 1 儿童）（工作室之旅）','combo',NULL,'active',92);
+
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type,
+                                     quantity, price_policy, sort_order)
+SELECT pv.id, 9, 'included', 2, '{}', 10
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult:1child:set';
+
+INSERT INTO product_variant_relation (parent_variant_id, child_variant_id, relation_type,
+                                     quantity, price_policy, sort_order)
+SELECT pv.id, 10, 'included', 1, '{}', 20
+  FROM product_variant pv
+ WHERE pv.variant_key = 'family:2adult:1child:set';
+
+-- -------------------------------------------------------------------------------------
+-- 19.3 源侧套装声明
+--
+-- 套装头：这个可售单元由那个源 SKU 整套供。
+-- 套装成分：这个 SKU 里含几个什么、各几份（与规范声明逐项对得上，不变量 96）。
+-- -------------------------------------------------------------------------------------
+INSERT INTO supplier_variant_bundle (product_variant_id, supplier_variant_id, valid_days, status)
+SELECT pv.id, sv.id, 1, 'active'
+  FROM product_variant pv
+  JOIN supplier_variant sv ON sv.external_variant_id = 'ZWO-FAMILY-SET'
+ WHERE pv.variant_key = 'family:2adult:1child:set';
+
+INSERT INTO supplier_variant_bundle_part (bundle_id, component_variant_id, quantity)
+SELECT svb.id, 9, 2
+  FROM supplier_variant_bundle svb
+  JOIN product_variant pv ON pv.id = svb.product_variant_id
+ WHERE pv.variant_key = 'family:2adult:1child:set';
+
+INSERT INTO supplier_variant_bundle_part (bundle_id, component_variant_id, quantity)
+SELECT svb.id, 10, 1
+  FROM supplier_variant_bundle svb
+  JOIN product_variant pv ON pv.id = svb.product_variant_id
+ WHERE pv.variant_key = 'family:2adult:1child:set';
+
+-- -------------------------------------------------------------------------------------
+-- 19.4 源价行与库存快照
+--
+-- 源价行：整套一个价（1500.00），挂在套装 SKU + 套装这个可售单元 + 这一天。
+-- 库存快照：还剩 5 **套**（不是 5 张）。池子挂在源票种上。
+-- -------------------------------------------------------------------------------------
+INSERT INTO supplier_price_calendar (supplier_product_id, supplier_ticket_type_id, supplier_session_id,
+                                     product_id, date, currency, supplier_price, net_price, tax,
+                                     min_qty, max_qty, status, product_variant_id, supplier_variant_id)
+SELECT sp.id, stt.id, ss.id, 6, current_date+12, 'CNY', 1500.00, 1500.00, 0, 1, 10, 'available',
+       pv.id, sv.id
+  FROM supplier_product sp
+  JOIN supplier_ticket_type stt ON stt.supplier_product_id = sp.id
+                                AND stt.external_id = 'FAMILY-SET'
+  JOIN supplier_session ss ON ss.supplier_product_id = sp.id
+                          AND ss.supplier_ticket_type_id = stt.id
+  JOIN supplier_variant sv ON sv.supplier_product_id = sp.id
+                          AND sv.external_variant_id = 'ZWO-FAMILY-SET'
+  JOIN product_variant pv ON pv.variant_key = 'family:2adult:1child:set'
+ WHERE sp.external_id = 'ZWO-USJ-2002';
+
+INSERT INTO inventory_snapshot (supplier_session_id, supplier_ticket_type_id, session_date,
+                                available_qty, held_qty, sold_qty, status, raw_payload, captured_at)
+SELECT ss.id, ss.supplier_ticket_type_id, current_date+12, 5, 0, 0, 'available',
+       '{"package":"FAMILY-SET","unit":"set"}', now()
+  FROM supplier_session ss
+ WHERE ss.external_id = 'ZYX-D20261116-FAM';
+
+-- -------------------------------------------------------------------------------------
+-- 19.5 定价：套装 = 一个源 SKU 整套卖
+--
+--   成本 = 1500.00（整套，源侧一个价）
+--   售价 = 1500 × (1 + 16%) = 1740.00
+--
+-- 与配方组合的差别在留痕上：套装有**单一采纳源、单一源币种、单一汇率**，
+-- 所以 fx_rate / fx_as_of 跟普通可售单元一样有值（同币种 → 因子 1、快照日期为空）。
+-- 配方组合没有单一采纳源，那两个字段是空的（那是「这里没有单一的值」）。
+--
+-- 断言的是「定价的唯一实现算出来的数」，不是把数写死在种子里再让别的代码去凑。
+-- -------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_variant  BIGINT;
+    v_price    RECORD;
+    v_parts    RECORD;
+    v_sum      NUMERIC := 0;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:set';
+
+    IF v_variant IS NULL THEN
+        RAISE EXCEPTION '套装变体没建起来';
+    END IF;
+
+    SELECT * INTO v_price
+      FROM fn_price_variant(v_variant, current_date + 12, 1, 1);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '套装定价失败（源侧当天没有套装报价 / 套装盖不住成分窗口 / 缺源票种）';
+    END IF;
+
+    IF v_price.cost_price <> 1500.00 THEN
+        RAISE EXCEPTION '套装成本算错：期望 1500.00，实际 %', v_price.cost_price;
+    END IF;
+
+    IF v_price.sell_price <> 1740.00 THEN
+        RAISE EXCEPTION '套装售价算错：期望 1740.00，实际 %', v_price.sell_price;
+    END IF;
+
+    -- 套装有单一采纳源：成本能追溯到那个具体的源商品（不变量 45 复查这件事）。
+    IF v_price.supplier_product_id IS NULL THEN
+        RAISE EXCEPTION '套装必须有单一采纳源（成本要能追溯到源商品）';
+    END IF;
+
+    IF v_price.source_currency IS DISTINCT FROM 'CNY' THEN
+        RAISE EXCEPTION '套装的源币种应为 CNY，实际 %', v_price.source_currency;
+    END IF;
+
+    -- 同币种不折算 → 因子 1、快照日期 NULL（硬约束 16：没折算过就不留假快照）。
+    IF v_price.fx_rate IS DISTINCT FROM 1 OR v_price.fx_as_of IS NOT NULL THEN
+        RAISE EXCEPTION '套装同币种时的折算留痕不对：因子 %，快照日期 %',
+          v_price.fx_rate, v_price.fx_as_of;
+    END IF;
+
+    -- 成本分摊：2 份成人 + 1 份儿童摊 1500.00，余数归最后一个成分（不变量 98）。
+    FOR v_parts IN
+        SELECT * FROM fn_bundle_components(v_variant, current_date + 12, 1, 'CNY')
+    LOOP
+        v_sum := v_sum + v_parts.unit_cost;
+
+        IF v_parts.set_cost IS DISTINCT FROM 1500.00 THEN
+            RAISE EXCEPTION '套装的整套成本应是 1500.00，实际 %', v_parts.set_cost;
+        END IF;
+
+        -- 源侧整套的有效期必须盖住成分的窗口（不变量 97）。
+        IF v_parts.covers_components IS NOT TRUE THEN
+            RAISE EXCEPTION '套装的源侧有效期盖不住成分 % 的窗口', v_parts.component_variant_id;
+        END IF;
+    END LOOP;
+
+    IF v_sum <> 1500.00 THEN
+        RAISE EXCEPTION '套装成本分摊之和不等于整套成本：期望 1500.00，实际 %', v_sum;
+    END IF;
+END $$;
+
+-- -------------------------------------------------------------------------------------
+-- 19.6 C 端：售价行 + 日历格子 + 读模型
+--
+-- 套装在源侧有商品条目，但它是「整套」，没有逐成分的售价行。
+-- 所以套装的售价行与日历格子也由它自己推（fn_sync_combo_calendar 的套装分支）。
+-- -------------------------------------------------------------------------------------
+SELECT * FROM fn_sync_combo_calendar();
+SELECT * FROM fn_refresh_read_models();
+
+DO $$
+DECLARE
+    v_variant BIGINT;
+    v_rows    INT;
+    v_comp    INT;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:set';
+
+    -- 售价行：金额来自定价函数，不是手写的
+    SELECT count(*) INTO v_rows
+      FROM price_calendar
+     WHERE product_variant_id = v_variant
+       AND status = 'active'
+       AND sell_price = 1740.00;
+
+    IF v_rows <> 1 THEN
+        RAISE EXCEPTION '套装必须有一行售价 1740.00 的售价行，实际 % 行', v_rows;
+    END IF;
+
+    -- 套装有单一采纳源 → 售价行上的采纳源不为空（不变量 16）
+    IF (SELECT count(*) FROM price_calendar
+         WHERE product_variant_id = v_variant AND status = 'active'
+           AND cost_source_product_id IS NULL) <> 0 THEN
+        RAISE EXCEPTION '套装的售价行必须有采纳源商品';
+    END IF;
+
+    -- 日历格子必须带价格
+    IF (SELECT count(*) FROM c_variant_calendar
+         WHERE product_variant_id = v_variant AND status = 'available' AND price_min = 1740.00) <> 1 THEN
+        RAISE EXCEPTION '套装的日历格子必须带价格 1740.00';
+    END IF;
+
+    -- 读模型里必须看得见这个套装，且看得见它的构成（2 份成人 + 1 份儿童）
+    IF (SELECT count(*) FROM c_variant_facts
+         WHERE product_variant_id = v_variant AND is_combo AND component_count = 2) <> 1 THEN
+        RAISE EXCEPTION 'C 端读模型里必须有一行套装（2 个成分）';
+    END IF;
+
+    SELECT count(*) INTO v_comp
+      FROM c_variant_composition
+     WHERE product_variant_id = v_variant
+       AND ((audience_code = 'adult' AND quantity = 2 AND valid_days = 1)
+         OR (audience_code = 'child' AND quantity = 1 AND valid_days = 1));
+
+    IF v_comp <> 2 THEN
+        RAISE EXCEPTION 'C 端读模型里必须看得到套装的两个成分（2 份成人 + 1 份儿童），实际 % 行', v_comp;
+    END IF;
+END $$;
+
+-- -------------------------------------------------------------------------------------
+-- 19.7 交易链路：一张套餐（1 套）→ 一条预订（订 1 套）→ 三张券
+--
+-- 客户买的是**一套**套餐（订单里一行明细）。
+--
+-- 预订的单位是**套**，不是人：
+--   源侧卖的是整套（一个 SKU、一个价、一个源票种），
+--   我们向源侧下的是「1 套」，不是「3 张」。
+-- 拿人数去下单，源侧会当成订了 3 套 —— 多订两套，钱就多花两套。
+--
+-- 出券按人：3 张券（2 成人 + 1 儿童），各自挂各自的持票人。
+--
+-- 预占按套：1 条预占，份数是 1（套），挂在套装的源票种上。
+-- 记成分会把这个池子扣成「3 张」—— 源侧那个池子是以套计的。
+-- -------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_order_id BIGINT;
+    v_order_no TEXT;
+    v_total    NUMERIC;
+    v_booking  BIGINT;
+    v_item_id  BIGINT;
+    v_variant  BIGINT;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:set';
+
+    -- 下单：一套套餐，三位持票人（按成分分组：成人成分 2 人、儿童成分 1 人）
+    SELECT o.order_id, o.order_no, o.order_total
+      INTO v_order_id, v_order_no, v_total
+      FROM fn_place_order(
+               1,
+               'idem-c2c-009-bundle',
+               jsonb_build_array(jsonb_build_object(
+                   'variant_id', v_variant, 'quantity', 1, 'visit_date', current_date + 12)),
+               3,
+               jsonb_build_object('name', '孙小果'),
+               NULL,
+               jsonb_build_array(
+                   -- 成人成分（变体 9）2 人：姓名 + 证件
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'holder_name', 'value', '孙小果'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'id_number',  'value', '110101199003033456'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'holder_name', 'value', '周小果'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'id_number',  'value', '110101199003033457'),
+                   -- 儿童成分（变体 10）1 人：姓名 + 生日
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'holder_name', 'value', '李小果'),
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'dob',        'value', '2020-04-08'))
+           ) o;
+
+    IF v_order_id IS NULL THEN
+        RAISE EXCEPTION '套装下单失败';
+    END IF;
+
+    -- 支付
+    PERFORM fn_record_payment(v_order_id, 'alipay', v_total, 'CNY', 'alipay', 'ALI88000009');
+
+    -- 预订：一个源 SKU 一条预订，份数是套数
+    PERFORM fn_create_bookings(v_order_id);
+
+    SELECT count(*) INTO v_booking
+      FROM booking b
+     WHERE b.order_id = v_order_id;
+
+    IF v_booking <> 1 THEN
+        RAISE EXCEPTION '套装应该产生 1 条预订（整套就是一个源 SKU），实际 % 条', v_booking;
+    END IF;
+
+    SELECT min(id) INTO v_booking
+      FROM booking b
+     WHERE b.order_id = v_order_id;
+
+    -- 预订的份数是「套」，不是「人」
+    IF (SELECT request_payload->>'quantity' FROM booking WHERE id = v_booking)::numeric <> 1 THEN
+        RAISE EXCEPTION '套装的预订份数应该是 1 套，实际 %',
+          (SELECT request_payload->>'quantity' FROM booking WHERE id = v_booking);
+    END IF;
+
+    IF (SELECT request_payload->>'admission_quantity' FROM booking WHERE id = v_booking)::numeric <> 3 THEN
+        RAISE EXCEPTION '套装的预订应该记 3 份入场（2 成人 + 1 儿童），实际 %',
+          (SELECT request_payload->>'admission_quantity' FROM booking WHERE id = v_booking);
+    END IF;
+
+    -- 这条预订覆盖两个成分
+    IF (SELECT count(*) FROM fn_booking_components(v_booking)) <> 2 THEN
+        RAISE EXCEPTION '套装的预订应该覆盖 2 个成分，实际 % 个',
+          (SELECT count(*) FROM fn_booking_components(v_booking));
+    END IF;
+
+    -- 向源侧下单并出券：票码按成分顺序给（成人 2 张 + 儿童 1 张 = 3 张）
+    PERFORM fn_request_booking(v_booking);
+
+    -- 发起请求之后，「套数 / 入场份数」这两个事实还在请求报文里（018 改成合并而不是覆盖）。
+    -- 事实不许因为一次调用就没了 —— 对账时要靠它分清「买了一套」和「发了三张票」。
+    IF (SELECT request_payload->>'quantity' FROM booking WHERE id = v_booking)::numeric <> 1 THEN
+        RAISE EXCEPTION '发起请求后套装的预订份数应该还是 1 套，实际 %',
+          (SELECT request_payload->>'quantity' FROM booking WHERE id = v_booking);
+    END IF;
+
+    IF (SELECT request_payload->>'admission_quantity' FROM booking WHERE id = v_booking)::numeric <> 3 THEN
+        RAISE EXCEPTION '发起请求后套装的预订应该还是记 3 份入场，实际 %',
+          (SELECT request_payload->>'admission_quantity' FROM booking WHERE id = v_booking);
+    END IF;
+
+    PERFORM fn_complete_booking(
+        v_booking,
+        'confirmed',
+        'ZWO-BK-SET-001',
+        jsonb_build_object('bookingRef', 'ZYX-BK-SET-001', 'status', 'OK'),
+        NULL, NULL, ARRAY['ZWO99301','ZWO99302','ZWO99303']);
+
+    -- ---- 断言：一套套餐 → 一条预订（1 套）→ 三张券 ----
+    SELECT id INTO v_item_id
+      FROM sales_order_item
+     WHERE order_id = v_order_id;
+
+    IF (SELECT count(*) FROM sales_order_item WHERE order_id = v_order_id) <> 1 THEN
+        RAISE EXCEPTION '套装应该只有一行订单明细';
+    END IF;
+
+    IF (SELECT count(*) FROM sales_order_item_source WHERE order_item_id = v_item_id) <> 2 THEN
+        RAISE EXCEPTION '套装应该落 2 行成分（2 成人 + 1 儿童）';
+    END IF;
+
+    -- 成本守恒：成分分摊之和 = 整套成本（不变量 83 / 98）
+    IF (SELECT round(sum(s.unit_cost * s.quantity), 2)
+          FROM sales_order_item_source s WHERE s.order_item_id = v_item_id) <> 1500.00 THEN
+        RAISE EXCEPTION '套装的成分成本之和必须等于整套成本 1500.00';
+    END IF;
+
+    IF (SELECT count(*) FROM voucher WHERE order_item_id = v_item_id AND status = 'issued') <> 3 THEN
+        RAISE EXCEPTION '套装应该发 3 张券（2 成人 + 1 儿童），实际 % 张',
+          (SELECT count(*) FROM voucher WHERE order_item_id = v_item_id AND status = 'issued');
+    END IF;
+
+    -- 三张券要分对成分：成人 2 张挂成分 9，儿童 1 张挂成分 10
+    IF (SELECT count(*) FROM voucher
+         WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 9) <> 2 THEN
+        RAISE EXCEPTION '套装应该有 2 张成人券（成分 9），实际 % 张',
+          (SELECT count(*) FROM voucher
+            WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 9);
+    END IF;
+
+    IF (SELECT count(*) FROM voucher
+         WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 10) <> 1 THEN
+        RAISE EXCEPTION '套装应该有 1 张儿童券（成分 10），实际 % 张',
+          (SELECT count(*) FROM voucher
+            WHERE order_item_id = v_item_id AND status = 'issued' AND product_variant_id = 10);
+    END IF;
+
+    -- 持票人按成分归位：儿童那张必须是李小果
+    IF (SELECT holder_snapshot->>'holder_name' FROM voucher
+         WHERE order_item_id = v_item_id AND product_variant_id = 10 AND status = 'issued') <> '李小果' THEN
+        RAISE EXCEPTION '儿童券的持票人应该是李小果（按成分归位，不按票种）';
+    END IF;
+
+    IF (SELECT status FROM sales_order WHERE id = v_order_id) <> 'fulfilled' THEN
+        RAISE EXCEPTION '套装出票后订单应为 fulfilled，实际 %',
+          (SELECT status FROM sales_order WHERE id = v_order_id);
+    END IF;
+
+    IF (SELECT status FROM sales_order_item WHERE id = v_item_id) <> 'ticketed' THEN
+        RAISE EXCEPTION '套装出票后明细应为 ticketed，实际 %',
+          (SELECT status FROM sales_order_item WHERE id = v_item_id);
+    END IF;
+
+    -- 预占：一条，份数是 1 套，挂在套装的源票种上
+    IF (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id) <> 1 THEN
+        RAISE EXCEPTION '套装应该有 1 条预占（整套一条），实际 % 条',
+          (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id);
+    END IF;
+
+    IF (SELECT quantity FROM inventory_hold WHERE order_id = v_order_id) <> 1 THEN
+        RAISE EXCEPTION '套装预占的份数应该是 1 套，实际 %',
+          (SELECT quantity FROM inventory_hold WHERE order_id = v_order_id);
+    END IF;
+
+    IF (SELECT count(*) FROM inventory_hold
+         WHERE order_id = v_order_id AND source_ticket_type_id IS NULL) <> 0 THEN
+        RAISE EXCEPTION '套装预占必须挂在源票种上（池子是以套计的）';
+    END IF;
+END $$;
+
+-- -------------------------------------------------------------------------------------
+-- 19.8 套装的退款：整单退，事实一起改
+--
+-- 与配方组合的退款是同一条路，但形状不同：
+--   配方组合退 2 条预占（每个成分一张）
+--   套装退 1 条预占（整套一条）
+--
+-- 留着这笔退过款的套装，不变量 69 才有牙齿：
+-- 退过款的订单，预占是 voided（卖过又收回，兑现量仍是原数）。
+-- -------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_order_id  BIGINT;
+    v_total     NUMERIC;
+    v_booking   BIGINT;
+    v_refund_id BIGINT;
+    v_variant   BIGINT;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:set';
+
+    SELECT o.order_id, o.order_total
+      INTO v_order_id, v_total
+      FROM fn_place_order(
+               1,
+               'idem-c2c-010-bundle-refund',
+               jsonb_build_array(jsonb_build_object(
+                   'variant_id', v_variant, 'quantity', 1, 'visit_date', current_date + 12)),
+               3,
+               jsonb_build_object('name', '吴小果'),
+               NULL,
+               jsonb_build_array(
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'holder_name', 'value', '吴小果'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 1, 'field_code', 'id_number',  'value', '110101199004044567'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'holder_name', 'value', '郑小果'),
+                   jsonb_build_object('variant_id', 9, 'sequence', 2, 'field_code', 'id_number',  'value', '110101199004044568'),
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'holder_name', 'value', '冯小果'),
+                   jsonb_build_object('variant_id', 10, 'sequence', 1, 'field_code', 'dob',        'value', '2021-06-15'))
+           ) o;
+
+    IF v_order_id IS NULL THEN
+        RAISE EXCEPTION '套装（待退款）下单失败';
+    END IF;
+
+    PERFORM fn_record_payment(v_order_id, 'wechat', v_total, 'CNY', 'wechat', 'WX88000010');
+    PERFORM fn_create_bookings(v_order_id);
+
+    SELECT min(id) INTO v_booking
+      FROM booking b
+     WHERE b.order_id = v_order_id;
+
+    IF v_booking IS NULL THEN
+        RAISE EXCEPTION '套装（待退款）没有预订';
+    END IF;
+
+    PERFORM fn_request_booking(v_booking);
+
+    PERFORM fn_complete_booking(
+        v_booking,
+        'confirmed',
+        'ZWO-BK-SET-002',
+        jsonb_build_object('bookingRef', 'ZYX-BK-SET-002', 'status', 'OK'),
+        NULL, NULL, ARRAY['ZWO99401','ZWO99402','ZWO99403']);
+
+    -- 退款：发起 → 放行 → 完成
+    SELECT r.refund_id INTO v_refund_id
+      FROM fn_request_refund(v_order_id, v_total, '套装整单退款', 'seed', 'idem-refund-bundle-001') r;
+
+    IF v_refund_id IS NULL THEN
+        RAISE EXCEPTION '套装退款发起失败';
+    END IF;
+
+    PERFORM fn_approve_refund(v_refund_id, 'seed');
+    PERFORM fn_complete_refund(v_refund_id, TRUE, 'ZWO-RF-SET-001');
+
+    -- ---- 断言：整单退，事实一起改 ----
+    IF (SELECT status FROM sales_order WHERE id = v_order_id) <> 'refunded' THEN
+        RAISE EXCEPTION '套装退款后订单应为 refunded，实际 %',
+          (SELECT status FROM sales_order WHERE id = v_order_id);
+    END IF;
+
+    IF (SELECT count(*) FROM voucher WHERE order_id = v_order_id AND status = 'refunded') <> 3 THEN
+        RAISE EXCEPTION '套装退款应作废 3 张券，实际 % 张',
+          (SELECT count(*) FROM voucher WHERE order_id = v_order_id AND status = 'refunded');
+    END IF;
+
+    IF (SELECT count(*) FROM booking WHERE order_id = v_order_id AND status = 'cancelled') <> 1 THEN
+        RAISE EXCEPTION '套装退款应取消 1 条预订，实际 % 条',
+          (SELECT count(*) FROM booking WHERE order_id = v_order_id AND status = 'cancelled');
+    END IF;
+
+    -- 预占：voided（卖过又收回），兑现量仍是原数 —— 事实不许被改写
+    IF (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id AND status = 'voided') <> 1 THEN
+        RAISE EXCEPTION '套装退款应收回 1 条预占，实际 % 条',
+          (SELECT count(*) FROM inventory_hold WHERE order_id = v_order_id AND status = 'voided');
+    END IF;
+
+    IF (SELECT count(*) FROM inventory_hold
+         WHERE order_id = v_order_id AND status = 'voided'
+           AND consumed_quantity <> quantity) <> 0 THEN
+        RAISE EXCEPTION '套装退款后预占的兑现量必须仍是原数（卖出的事实不许被改写）';
+    END IF;
+END $$;
+
+
 COMMIT;
 
 -- 统计

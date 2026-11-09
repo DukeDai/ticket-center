@@ -6,6 +6,7 @@
 //	Coverage     —— v_variant_source_coverage：这个可售单元有哪些源能供、缺什么
 //	Feed         —— v_c_variant_feed：C 端读模型里的变体行（请求链路不许 join 主数据，差异靠它带出来）
 //	Composition  —— v_c_variant_composition：组合由谁组成（几份成人、几份儿童、各管几天）
+//	Bundle       —— v_variant_bundle：套装由谁组成（源侧把整套当一个 SKU 卖的情形）
 //
 // 为什么不自己算：轴取值、有效天数、覆盖判定都有唯一实现
 // （fn_variant_validity_days / fn_variant_covered），
@@ -95,6 +96,132 @@ type Component struct {
 	Quantity           string `json:"quantity"`
 	AudienceCode       string `json:"audience_code"`
 	ValidDays          int    `json:"valid_days"`
+}
+
+// Bundle 是一行套装（源侧把整套当一个 SKU 卖）。
+//
+// 套装是异构融合的第三种形态：
+// 方向 A 是一个源 SKU 覆盖多个可售单元，
+// 方向 B 的配方是一个可售单元由多个源 SKU 按份数组成，
+// 套装是**一个源 SKU 把整套当一个 SKU 卖** —— 从 coverage 看不出来是哪种，
+// 所以要单独声明（supplier_variant_bundle），不许靠猜。
+type Bundle struct {
+	BundleID          int64  `json:"bundle_id"`
+	ProductVariantID  int64  `json:"product_variant_id"`
+	ProductID         int64  `json:"product_id"`
+	VariantCode       string `json:"variant_code"`
+	VariantKey        string `json:"variant_key"`
+	SupplierVariantID int64  `json:"supplier_variant_id"`
+	SupplierProductID int64  `json:"supplier_product_id"`
+	SourceSetSKU      string `json:"source_set_sku"`
+	SourceSetTitle    string `json:"source_set_title"`
+	SupplierCode      string `json:"supplier_code"`
+	// SetValidDays 是源侧整套能用的天数，UnionDays 是规范侧成分窗口的并集。
+	// 前者不小于后者，套装才盖得住成分（否则第二天进门进不去）。
+	SetValidDays string `json:"set_valid_days"`
+	UnionDays    int    `json:"union_days"`
+	CoversWindow bool   `json:"covers_window"`
+	PartCount    int    `json:"part_count"`
+	// AdmissionsPerSet 是这一套能进场的份数（2 成人 + 1 儿童 = 3）。
+	AdmissionsPerSet string `json:"admissions_per_set"`
+	// Parts 是成分构成（JSON），每项带份数、人群编码、各管几天。
+	Parts string `json:"parts"`
+	// GapDays 是卖不掉的天数，GapReasons 是原因清单。
+	GapDays    int    `json:"gap_days"`
+	GapReasons string `json:"gap_reasons"`
+}
+
+// BundlePart 是一行套装成分。
+type BundlePart struct {
+	ProductVariantID   int64  `json:"product_variant_id"`
+	SupplierVariantID  int64  `json:"supplier_variant_id"`
+	BundleID           int64  `json:"bundle_id"`
+	PartID             int64  `json:"part_id"`
+	ComponentVariantID int64  `json:"component_variant_id"`
+	VariantCode        string `json:"variant_code"`
+	Title              string `json:"title"`
+	Quantity           string `json:"quantity"`
+	AudienceCode       string `json:"audience_code"`
+	ValidDays          int    `json:"valid_days"`
+}
+
+// BundleRows 返回套装清单。variantID 为 0 时返回全部套装。
+//
+// 它只读视图，不重算份数与有效期 —— 那是主数据的事（fn_variant_validity_days）。
+func BundleRows(db *store.DB, variantID int64) ([]Bundle, error) {
+	sql := `SELECT bundle_id, product_variant_id, product_id, variant_code, variant_key,
+	               supplier_variant_id, supplier_product_id, source_set_sku, source_set_title,
+	               supplier_code, set_valid_days::text AS set_valid_days, union_days,
+	               covers_window, part_count, admissions_per_set::text AS admissions_per_set,
+	               COALESCE(parts::text, '[]') AS parts,
+	               gap_days, COALESCE(gap_reasons::text, '[]') AS gap_reasons
+	          FROM v_variant_bundle`
+	if variantID > 0 {
+		sql += fmt.Sprintf(" WHERE product_variant_id = %d", variantID)
+	}
+	sql += " ORDER BY product_variant_id, bundle_id"
+
+	rows, err := db.Rows(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Bundle, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Bundle{
+			BundleID:          atoi64(r["bundle_id"]),
+			ProductVariantID:  atoi64(r["product_variant_id"]),
+			ProductID:         atoi64(r["product_id"]),
+			VariantCode:       r["variant_code"],
+			VariantKey:        r["variant_key"],
+			SupplierVariantID: atoi64(r["supplier_variant_id"]),
+			SupplierProductID: atoi64(r["supplier_product_id"]),
+			SourceSetSKU:      r["source_set_sku"],
+			SourceSetTitle:    r["source_set_title"],
+			SupplierCode:      r["supplier_code"],
+			SetValidDays:      r["set_valid_days"],
+			UnionDays:         atoi(r["union_days"]),
+			CoversWindow:      atobool(r["covers_window"]),
+			PartCount:         atoi(r["part_count"]),
+			AdmissionsPerSet:  r["admissions_per_set"],
+			Parts:             r["parts"],
+			GapDays:           atoi(r["gap_days"]),
+			GapReasons:        r["gap_reasons"],
+		})
+	}
+	return out, nil
+}
+
+// BundlePartRows 返回套装成分明细。variantID 为 0 时返回全部套装的成分。
+func BundlePartRows(db *store.DB, variantID int64) ([]BundlePart, error) {
+	sql := `SELECT product_variant_id, supplier_variant_id, bundle_id, part_id,
+	               component_variant_id, variant_code, title,
+	               quantity::text AS quantity, audience_code, valid_days
+	          FROM v_variant_bundle_part`
+	if variantID > 0 {
+		sql += fmt.Sprintf(" WHERE product_variant_id = %d", variantID)
+	}
+	sql += " ORDER BY product_variant_id, bundle_id, part_id"
+
+	rows, err := db.Rows(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BundlePart, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, BundlePart{
+			ProductVariantID:   atoi64(r["product_variant_id"]),
+			SupplierVariantID:  atoi64(r["supplier_variant_id"]),
+			BundleID:           atoi64(r["bundle_id"]),
+			PartID:             atoi64(r["part_id"]),
+			ComponentVariantID: atoi64(r["component_variant_id"]),
+			VariantCode:        r["variant_code"],
+			Title:              r["title"],
+			Quantity:           r["quantity"],
+			AudienceCode:       r["audience_code"],
+			ValidDays:          atoi(r["valid_days"]),
+		})
+	}
+	return out, nil
 }
 
 // Compare 返回可售单元的差异对照。productID 为 0 时不按商品过滤。

@@ -6,7 +6,7 @@
 #   make check     vet + test + 协议自检 + 演练器（提交前跑这个）
 #   make mock      协议级自检（本地 mock，14 项断言）
 #   make layers    分层连通性测试（真实端点）
-#   make dryrun    无凭证集成演练（建演练库 + 92 条不变量自检）
+#   make dryrun    无凭证集成演练（建演练库 + 99 条不变量自检）
 #   make db        重建主库并验收
 #   make migrate   应用待应用的迁移（存量库）
 #   make dbstatus  看迁移状态
@@ -47,7 +47,7 @@ fmt:
 	$(GO) fmt ./...
 
 # 提交前的完整自检
-# dbcheck 必须进 check：92 条不变量是门禁，不是「有空跑一下」的报告
+# dbcheck 必须进 check：99 条不变量是门禁，不是「有空跑一下」的报告
 check: vet test-strict build mock dbcheck dryrun
 
 mock: build
@@ -74,7 +74,7 @@ dbcheck: build
 	@./$(BIN) migrate --db $(CIBASE)
 	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 -f db/seed.sql > /dev/null
 	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 -f db/verify.sql > /dev/null
-	@echo "门禁通过：$(CIBASE) 的 92 条不变量全绿"
+	@echo "门禁通过：$(CIBASE) 的 99 条不变量全绿"
 
 # 应用待应用的迁移（存量库用这个，不要重建）
 migrate: build

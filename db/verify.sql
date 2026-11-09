@@ -344,6 +344,96 @@ FROM sales_order_item
 GROUP BY pricing_basis
 ORDER BY pricing_basis;
 
+\echo ''
+\echo '════════════════════════ K1. 套装供给形态（一个源 SKU 卖整套） ════════════════════════'
+-- 套装 = 源侧把整套当一个 SKU 卖。规范侧声明「这套包含什么」，
+-- 源侧声明「这套卖多少钱、能用几天」。两边对不上 = 卖不出去。
+SELECT pv.variant_code AS canonical_variant,
+       sv.external_variant_id AS source_set_sku,
+       svb.valid_days AS set_valid_days,
+       fn_variant_validity_days(svb.product_variant_id) AS canonical_window_days,
+       (svb.valid_days >= fn_variant_validity_days(svb.product_variant_id)) AS covers_window,
+       count(svbp.id) AS declared_parts,
+       (SELECT count(*) FROM product_variant_relation r
+         WHERE r.parent_variant_id = svb.product_variant_id AND r.relation_type = 'included') AS canonical_parts,
+       sum(svbp.quantity) AS admissions_per_set
+FROM supplier_variant_bundle svb
+JOIN product_variant pv ON pv.id = svb.product_variant_id
+JOIN supplier_variant sv ON sv.id = svb.supplier_variant_id
+LEFT JOIN supplier_variant_bundle_part svbp ON svbp.bundle_id = svb.id
+WHERE svb.status = 'active'
+GROUP BY 1,2,3,4,5,svb.product_variant_id
+ORDER BY 1;
+
+\echo ''
+\echo '════════════════════════ K2. 套装成本分摊守恒（分摊之和 = 整套成本） ════════════════════'
+-- 套装的成本来自源侧那个整套报价（一笔 1500），不是各成分单价相加。
+-- 分摊到成分只是为了对账：Σ 分摊必须精确等于整套成本，一分不能差。
+SELECT pv.variant_code, pc.date, pc.sell_price, pc.cost_source_product_id AS adopted_source_product,
+       (pc.rule->'combo'->0->>'currency') AS source_currency, pc.fx_rate, pc.fx_as_of,
+       (pc.rule->>'bundle')::boolean AS priced_as_bundle,
+       jsonb_array_length(pc.rule->'combo') AS parts,
+       (SELECT round(sum((e->>'unit_cost')::numeric),2) FROM jsonb_array_elements(pc.rule->'combo') e) AS parts_cost_sum,
+       pc.cost_price,
+       (SELECT round(sum((e->>'unit_cost')::numeric),2) FROM jsonb_array_elements(pc.rule->'combo') e) = pc.cost_price AS cost_conserved
+FROM price_calendar pc
+JOIN product_variant pv ON pv.id = pc.product_variant_id
+WHERE (pc.rule->>'bundle')::boolean IS TRUE
+ORDER BY 1,2;
+
+\echo ''
+\echo '════════════════════════ K3. 套装交易链路（一套 → 一条预订 → 三张券 → 一条预占） ═════'
+-- 三个单位不许混：
+--   售卖单位 = 套（订单明细的 quantity）
+--   成分单位 = 预订的单位（一个源 SKU 一条预订，份数是套数）
+--   入场份数 = 发的券的张数（成分 × 份数）
+-- 判据：booked_sets = 1 而 booked_admissions = 3 —— 买的是一套，进场的是三个人。
+SELECT o.order_no, o.status AS order_status, oi.quantity AS sets_ordered,
+       oi.total_price,
+       (SELECT count(*) FROM booking b WHERE b.order_item_id = oi.id) AS bookings,
+       (SELECT b.request_payload->>'quantity' FROM booking b WHERE b.order_item_id = oi.id LIMIT 1) AS booked_sets,
+       (SELECT b.request_payload->>'admission_quantity' FROM booking b WHERE b.order_item_id = oi.id LIMIT 1) AS booked_admissions,
+       (SELECT count(*) FROM sales_order_item_source s WHERE s.order_item_id = oi.id) AS component_rows,
+       (SELECT sum(s.admission_quantity) FROM sales_order_item_source s WHERE s.order_item_id = oi.id) AS admissions,
+       (SELECT count(*) FROM voucher v WHERE v.order_item_id = oi.id AND v.status = 'issued') AS issued_vouchers,
+       (SELECT count(*) FROM inventory_hold h WHERE h.order_id = o.id AND h.product_variant_id = oi.product_variant_id) AS holds,
+       (SELECT sum(h.quantity) FROM inventory_hold h WHERE h.order_id = o.id AND h.product_variant_id = oi.product_variant_id) AS held_sets,
+       (SELECT count(*) FROM inventory_hold h WHERE h.order_id = o.id AND h.source_ticket_type_id IS NOT NULL) AS holds_on_source_ticket_type
+FROM sales_order o
+JOIN sales_order_item oi ON oi.order_id = o.id
+JOIN product_variant pv ON pv.id = oi.product_variant_id
+WHERE pv.variant_key = 'family:2adult:1child:set'
+ORDER BY o.id;
+
+\echo ''
+\echo '════════════════════════ K4. 套装退款后的事实（成分层面的事实一起改） ════════════════'
+-- 整单退款要把成分的券 / 预订 / 预占一起改掉。
+-- 判据：refunded_vouchers = 3、still_issued = 0、cancelled_bookings = 1、voided_keeps_consumed = 1。
+-- 最后一项是「卖出的事实不许被改写」：预占收回了，consumed_quantity 仍然是原数。
+SELECT o.order_no, o.status AS order_status,
+       (SELECT count(*) FROM voucher v JOIN sales_order_item oi2 ON oi2.id = v.order_item_id
+         WHERE oi2.order_id = o.id AND v.status = 'refunded') AS refunded_vouchers,
+       (SELECT count(*) FROM voucher v JOIN sales_order_item oi2 ON oi2.id = v.order_item_id
+         WHERE oi2.order_id = o.id AND v.status = 'issued') AS still_issued,
+       (SELECT count(*) FROM booking b WHERE b.order_id = o.id AND b.status = 'cancelled') AS cancelled_bookings,
+       (SELECT count(*) FROM inventory_hold h WHERE h.order_id = o.id AND h.status = 'voided') AS voided_holds,
+       (SELECT count(*) FROM inventory_hold h WHERE h.order_id = o.id AND h.status = 'voided'
+           AND h.consumed_quantity = h.quantity) AS voided_keeps_consumed
+FROM sales_order o
+JOIN sales_order_item oi ON oi.order_id = o.id
+JOIN product_variant pv ON pv.id = oi.product_variant_id
+WHERE pv.variant_key = 'family:2adult:1child:set'
+  AND o.status = 'refunded'
+ORDER BY o.id;
+
+\echo ''
+\echo '════════════════════════ K5. 套装缺口诊断（为什么卖不了） ════════════════════════════'
+-- 空 reason = 这一天套装是能卖的。
+SELECT product_variant_id, supplier_variant_id, date, session_id, source_session_id,
+       source_ticket_type_id, set_price, valid_days, union_days, reason
+FROM v_bundle_gap
+ORDER BY product_variant_id, supplier_variant_id, date;
+
 
 \echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'
 -- 种子数据用了显式 id，identity 序列必须同步推进。

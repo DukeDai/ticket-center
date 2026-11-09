@@ -230,6 +230,23 @@ func TestPricedSourceIsRoutePick(t *testing.T) {
 		if err != nil {
 			t.Fatalf("取路由首选源失败：%v", err)
 		}
+		if pick == "" {
+			// 套装没有路由候选：它的供给就是声明的那个整套源 SKU。
+			// 定价用的源必须就是它 —— 换个源就是「按 A 源的价格卖、按 B 源出票」。
+			want, err := db.Scalar(
+				"SELECT sv.supplier_product_id FROM supplier_variant_bundle svb " +
+					"JOIN supplier_variant sv ON sv.id = svb.supplier_variant_id " +
+					"WHERE svb.product_variant_id = " + strconv.FormatInt(variant, 10) + " " +
+					"AND svb.status = 'active';")
+			if err != nil {
+				t.Fatalf("取套装声明的整套源失败：%v", err)
+			}
+			if want != r["cost_source_product_id"] {
+				t.Errorf("变体 %s @ %s：套装定价用了源 %s，套装声明的是 %s",
+					r["product_variant_id"], r["date"], r["cost_source_product_id"], want)
+			}
+			continue
+		}
 		if pick != r["cost_source_product_id"] {
 			t.Errorf("变体 %s @ %s：定价用了源 %s，路由选的是 %s",
 				r["product_variant_id"], r["date"], r["cost_source_product_id"], pick)

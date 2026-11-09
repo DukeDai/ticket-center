@@ -2,8 +2,8 @@
 
 > 物理模型：`db/migrations/`（PostgreSQL 15+；基线 `001_baseline.sql` + 后续迁移文件）
 > 建库：`tc-connect migrate --db <库>`（迁移引擎：账本 + 内容校验和 + 幂等 + 并发互斥）
-> 验收：`db/verify.sql`（94 条不变量断言 + 17 组业务视图）
-> 结论先行：**选 PostgreSQL + jsonb 混合模型**。75 张业务表（+1 张迁移账本）/ 40 张视图 / 218 个索引 / 38 个触发器 / 96 个 CHECK 约束 / 65 个序列。
+> 验收：`db/verify.sql`（99 条不变量断言 + 17 组业务视图）
+> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 48 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列。
 
 ---
 
@@ -214,7 +214,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 ### 4.10 运维（3）
 `event_outbox` · `notification_outbox` · `app_setting`
 
-### 4.11 视图（39）
+### 4.11 视图（48）
 
 | 视图 | 回答什么问题 |
 |---|---|
@@ -229,7 +229,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 94 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条） |
+| `v_invariant_checks` | 99 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条） |
 | `v_invariant_checks_core` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
@@ -251,6 +251,14 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_variant_composition` | 组合映射一行看清（组合 / 组件 / 源 SKU / 源侧数量 vs 声明数量） |
 | `v_order_item_source` | 订单明细的履约单位一行看清（成分变体 / 源 SKU / 数量 / 出票张数 / 单价 / 预订 / 券） |
 | `v_combo_price_gap` | 这个组合为什么卖不了？（成分缺价 / 场次不同 / 源不同 / 价格锁定 / 按团报价，逐条列原因） |
+| `v_bundle_gap` | 这张套装为什么卖不了？（没有源侧报价 / 没有规范场次 / 没绑源场次 / 没有源侧票种 / 有效期盖不住 / 可售数未知，按天列） |
+| `v_variant_bundle` | 套装的供给形态一行看清（规范变体 ← 整套源 SKU + 成分构成 + 有效期窗口 + 缺口诊断） |
+| `v_variant_bundle_part` | 套装成分明细（一行一个成分：份数 / 人群编码 / 各自管几天） |
+| `v_invariant_checks_bundle` | 套装侧 5 条有没有被破坏？（形态唯一 / 成分与声明对得上 / 有效期盖得住 / 成本分摊守恒 / 入场份数守恒） |
+| `v_invariant_checks_core_017` | 供给侧 45 条里 34 与 43 按套装口径修订后的那一版 |
+| `v_invariant_checks_inventory_017` | 库存预占侧 4 条里 69 与 72 按套装口径修订后的那一版 |
+| `v_invariant_checks_validity_017` | 有效期侧 3 条里 75 按套装口径修订后的那一版 |
+| `v_invariant_checks_combo_017` | 组合售卖侧 7 条里 84 按套装口径修订后的那一版 |
 
 ### 4.12 C 端域（20，见 `docs/c-end-model.md`）
 
@@ -264,9 +272,14 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 
 > 加上 `ALTER TABLE` 补的 4 列（`sales_order.cart_id/coupon_id/discount_breakdown`、`voucher_redemption.gate_id/gate_operator_id`）。
 
-### 4.13 变体域（9，详见 §5 与 §20）
+### 4.13 变体域（11，详见 §5 与 §20）
 
-`product_axis` · `product_axis_option` · `product_variant` · `product_variant_option` · `product_variant_relation` · `supplier_variant` · `supplier_variant_mapping` · `supplier_variant_composition` · `c_variant_calendar`
+`product_axis` · `product_axis_option` · `product_variant` · `product_variant_option` · `product_variant_relation` · `supplier_variant` · `supplier_variant_mapping` · `supplier_variant_composition` · `supplier_variant_bundle` · `supplier_variant_bundle_part` · `c_variant_calendar`
+
+套装的两张表（017）：`supplier_variant_bundle` 记「规范变体 ← 整套源 SKU +
+源侧整套的有效期」，`supplier_variant_bundle_part` 记「这套包含什么、几份」。
+方向 A 的 `coverage` 看不出一个源 SKU 是「一整套」还是「一张谁都能用的票」，
+所以套装必须单独声明，不许靠猜。
 
 ---
 
@@ -580,7 +593,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 
 ### 10.3 迁移里放了什么
 
-目前有十四个文件：
+目前有十九个文件：
 
 | 文件 | 内容 | 为什么它是迁移而不是种子 |
 |---|---|---|
@@ -600,6 +613,9 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `014_booking_unit_source_sku.sql` | `fn_booking_components()`（一条预订覆盖哪些成分的唯一读法）+ `fn_create_bookings()` / `fn_issue_voucher()` 的整体替换（`CREATE OR REPLACE`）+ 拆掉 `booking.order_item_source_id` + 唯一索引 `ux_booking_one_per_source_sku` + `v_order_item_source` 重建 + 履约侧 / 有效期侧 / 组合侧不变量视图重建（不变量 87 / 88 新增，58 与 75 按新口径重写） | 预订的单位定错了：013 按成分建预订，而参数化源里成人票与儿童票是**同一个源 SKU** —— 于是同一个源 SKU 在同一个源场次上订了两次，源侧看到两张订单单，我们这边一条客户订单对两个源单号。源卖的是 SKU，我们就按 SKU 订（见 §22） |
 | `015_combo_c_end.sql` | `fn_variant_composition()`（组合成分的唯一读法）+ `fn_variant_validity_days()` 整体替换（组合分支 = 成分窗口的并集）+ `v_variant_comparison` 加四列（`is_combo` / `combo_audience` / `component_count` / `composition`）+ `c_variant_composition` 表 + `c_variant_facts` 加三列 + `fn_refresh_read_models()` 整体替换 + `v_c_variant_feed` 整体替换 + `v_c_variant_composition` + `fn_sync_combo_calendar()` + 核心不变量视图按组合口径重写（16 / 34）+ 不变量 89-92 新增 | 组合在自己的配方里画得出来，但 C 端画不出：源侧没有它的商品条目，目录同步作业看不见它，它没有 `price_calendar` 行，所以上不了日历。015 补上这条路径 —— 组合的售价行与日历格子由配方推出来，构成进读模型（见 §23） |
 | `016_security_hardening.sql` | `sales_refund.approved_by` 列 + `fn_complete_refund()` 整体替换（只接受 `approved` 的退款单）+ `fn_issue_voucher()` 整体替换（源侧没给票码时生成 128 位随机码）+ `v_invariant_checks_hardening` + `v_invariant_checks` 重建（不变量 93-94 新增） | 放行与出券这两步以前可以在实现里被绕过：绕过之后系统照样跑，只是没人知道钱是谁放行的、闸机认的是哪张票。两处门禁把「必经之路」变成机制（见 §24） |
+| `017_supplier_bundle.sql` | `supplier_variant_bundle` / `supplier_variant_bundle_part` 两张表 + 三个守卫触发器（形态唯一 / 成分归属 / 成分合法性）+ `fn_bundle_components()` + `fn_price_variant()` / `fn_place_order()` / `fn_create_bookings()` / `fn_sync_combo_calendar()` 的套装分支（`CREATE OR REPLACE`）+ `fn_available_qty()` / `fn_reserve_qty()` 加带 `source_ticket_type_id` 的重载 + `inventory_hold.source_ticket_type_id` 列+ `v_bundle_gap` / `v_variant_bundle` / `v_variant_bundle_part` + 不变量 95-99 新增、34 / 43 / 69 / 72 / 75 / 84 按套装口径重写 | 异构融合的第三种形态：源侧把整套当一个 SKU 卖。方向 A 的 `coverage` 看不出一个源 SKU 是「一整套」还是「一张谁都能用的票」—— 看不出来就不能猜，所以套装必须单独声明。套装的成本来自源侧那个整套报价（不重新选源）、预订的单位是套、库存扣源侧整套票种的池子、有效期由源侧声明且必须盖住成分窗口（见 §25） |
+| `018_booking_request_payload_merge.sql` | `fn_request_booking()` 整体替换（请求报文改成合并而不是覆盖） | `fn_create_bookings()` 写的「我们打算发出去的请求」原来会被接入层实际发出的那一份覆盖掉，而且参数默认值是 `'{}'` 不是 NULL，连「不传报文」都会把整列洗掉。套装的套数与入场份数就靠这两个字段区分，洗掉之后「预订的单位是套还是份」在库里没处可查，对账只能靠猜（见 §26） |
+| `019_bundle_gap_days.sql` | `v_variant_bundle` 整体替换（缺口天数只数真卖不掉的那几天） | 缺口视图里混着「这一天能卖」（原因为空）的行，天数却把所有行都数进去 —— 套装天天能卖却报「有 N 天卖不掉」，理由还是空的，运营会去查一个不存在的问题 |
 
 读模型刷新写成一个 SQL 函数而不是散在调用方里，是有代价换来的：
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
@@ -732,7 +748,7 @@ CREATE VIEW v_invariant_checks AS
 - 并发：两个迁移进程同时跑，会话级互斥锁把它们串行化
 - `db/seed.sql` 完整装载（7 源 / 11 源商品 / 7 规范商品 / 11 映射 / 13 场次源绑定 / 6 订单 / 7 明细 / 6 预订 / 7 凭证 / 2 结算单 / 9 读模型卡片 / 11 日历格子 / 4 优惠券 / 4 购物车 / 4 库存预占 / 11 结算规格 / 10 持票人 / 6 评价 / 19 变体（含 2 张套餐）/ 25 源变体 / 29 覆盖映射 / 4 组合成分行）
 - `db/verify.sql` 全部视图正常输出
-- `v_invariant_checks` 94 条断言 **94/94 PASS**
+- `v_invariant_checks` 99 条断言 **99/99 PASS**
 - 状态机机制实测：非法流转（`expired → confirmed`）当场报错且数据未变；
   合法流转（`failed → pending`）写进去了，并在 `event_outbox` 留下 `BookingRetryScheduled`
 - C 端读模型漂移检测：9 张卡片全部 `drifted=f`（`drifted=true` 计数 0）
@@ -1597,3 +1613,82 @@ GROUP BY s.supplier_variant_id, s.supplier_product_id, s.supplier_id,
 出券时多一次随机数生成（可忽略），退款完成时多一道状态检查（可忽略）。
 换来的是：放行是必经之路，票码不可猜。
 这两条都不靠「调用方记得传对参数」，靠的是写路径自己挡住。
+
+---
+
+## 25. 套装：源侧把整套当一个 SKU 卖
+
+异构融合到这一步有三种形态：
+
+| 方向 | 语义 | 模型 |
+|---|---|---|
+| A | 一个源 SKU 覆盖多个可售单元 | `supplier_variant_mapping.coverage` + `fn_variant_covered()` |
+| B（配方） | 一个可售单元由多个源 SKU 按数量组成 | `supplier_variant_composition` + `product_variant_relation.quantity` |
+| B（套装） | **一个源 SKU 把整套当一个 SKU 卖** | `supplier_variant_bundle` + `supplier_variant_bundle_part` |
+
+第三种形态以前接不了，理由写在 §20 末尾：从 `coverage` 看不出一个源 SKU 是
+「一整套」还是「一张谁都能用的票」。两者都能覆盖住同一个可售单元，
+但成本、预订单位、库存池、有效期全都不一样 —— **看不出来就不能猜**。
+
+017 的做法是**单独声明**，不推断。
+
+### 25.1 三个单位不许混
+
+| 单位 | 是什么 | 存在哪 |
+|---|---|---|
+| 售卖单位 | 套 | `sales_order_item.quantity` |
+| 成分单位 | 预订的单位（一个源 SKU 一条预订） | `booking.request_payload.quantity` |
+| 入场份数 | 发的券的张数 | `sales_order_item_source.admission_quantity` |
+
+一套「2 成人 + 1 儿童」= **1 套 / 3 份入场**。
+不变量 99 守的就是这条：入场份数 = 套装声明的份数 × 套餐份数。
+拿套数去比份数、或者拿份数去比套数，都会判成「少发了票」。
+
+### 25.2 成本与库存
+
+套装的成本就是源侧那个**整套报价**，不是成分单价相加，**也不重新路由** ——
+重新选源等于让配方变摆设，出现「按 A 源的价格卖、按 B 源出票」。
+分摊到成分只是为了对账：分摊按每套口径精确到两位，最后一份吸收余数，
+Σ 分摊 × 套数 = 整套成本 × 套数（不变量 98）。
+
+库存不按成分各扣各的，扣的是**源侧整套票种**那个池子：
+`fn_available_qty()` / `fn_reserve_qty()` 加了带 `source_ticket_type_id` 的重载，
+`inventory_hold` 加了同名列。预占一条，份数是套数。
+
+### 25.3 有效期
+
+`supplier_variant_bundle.valid_days` 是源侧整套能用的天数，
+必须盖住规范侧成分窗口的并集（不变量 97）。
+盖不住就是第二天进不去 —— 钱收了、票买了、门不认。
+
+### 25.4 缺口要说清
+
+`v_bundle_gap` 按天列出套装卖不掉的原因：没有源侧报价 / 没有规范场次 /
+没绑源场次 / 没有源侧票种（算不出库存池）/ 有效期盖不住 / 可售数未知。
+看不出来就说看不出来，不猜。
+
+---
+
+## 26. 预订的请求报文改成合并
+
+`fn_create_bookings()` 往 `booking.request_payload` 写的是**我们打算发出去的请求**
+（订单号 / 份数 / 成分 / 快照）；`fn_request_booking(p_request)` 写的是
+**接入层实际发出去的那一份**。原来后者是覆盖：
+
+```sql
+request_payload = COALESCE(p_request, request_payload)
+```
+
+`p_request` 的默认值是 `'{}'::jsonb` 而不是 NULL，所以「不传报文」也会把整列洗掉。
+
+套装的份数与入场份数就靠这两个字段区分（1 套 vs 3 份）——
+洗掉之后「预订的单位是套还是份」这件事在库里就没处可查，对账只能靠猜。
+
+018 的做法是合并：
+
+```sql
+request_payload = booking.request_payload || COALESCE(p_request, '{}'::jsonb)
+```
+
+我们写的事实留着，接入层这次发出去的报文盖在上面（同名键以接入层为准 ——
+它是这次请求的真实内容）。

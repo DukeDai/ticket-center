@@ -437,13 +437,14 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 `hold release` 重复调用返回「已经放过了」，不报错 —— 放占是幂等的。
 `hold expire` 是 TTL 作业，只动已过期且仍 `active` 的预占。
 
-### `tc-connect variant` — 异构差异的三个视角
+### `tc-connect variant` — 异构差异的五个视角
 
 ```bash
 ./bin/tc-connect variant compare  --db ticket_center [--product 6] [--json out.json]
 ./bin/tc-connect variant coverage --db ticket_center [--variant 14] [--json out.json]
 ./bin/tc-connect variant feed     --db ticket_center [--channel 1] [--product 6] [--json out.json]
 ./bin/tc-connect variant composition --db ticket_center [--variant 18] [--channel 1] [--json out.json]
+./bin/tc-connect variant bundle   --db ticket_center [--variant 21] [--json out.json]
 ```
 
 | 子命令 | 回答什么问题 | 读什么 |
@@ -452,6 +453,14 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 | `coverage` | 哪些源能供这个单元、缺什么？ | `v_variant_source_coverage` |
 | `feed` | C 端读模型里的变体行长什么样？ | `v_c_variant_feed` |
 | `composition` | 这张套餐由谁组成？（几份成人、几份儿童、各管几天） | `v_c_variant_composition` |
+| `bundle` | 这张套装（源侧整套卖）由谁组成？源侧整套能管几天？哪几天卖不掉、为什么？ | `v_variant_bundle` / `v_variant_bundle_part` |
+
+`variant bundle` 打印的是套装的三件事：成分构成（份数 / 人群编码 / 各自管几天）、
+有效期窗口（源侧整套几天 vs 成分窗口几天，盖不盖得住）、
+缺口诊断（哪几天卖不掉、为什么不卖）。套装是异构融合的第三种形态 ——
+方向 A 是一个源 SKU 覆盖多个可售单元，方向 B 的配方是一个可售单元由多个源 SKU
+按份数组成，套装是**源侧把整套当一个 SKU 卖**。从 `coverage` 看不出是哪种，
+所以必须单独声明，不许靠猜。
 
 三个子命令都只读视图，**不重算任何口径**：有效天数走 `fn_variant_validity_days`，
 覆盖判定走 `fn_variant_covered`。在 Go 里再写一遍就是第二份实现 ——
