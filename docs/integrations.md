@@ -444,7 +444,7 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 `hold release` 重复调用返回「已经放过了」，不报错 —— 放占是幂等的。
 `hold expire` 是 TTL 作业，只动已过期且仍 `active` 的预占。
 
-### `tc-connect variant` — 异构差异的五个视角
+### `tc-connect variant` — 异构差异的六个视角
 
 ```bash
 ./bin/tc-connect variant compare  --db ticket_center [--product 6] [--json out.json]
@@ -452,6 +452,7 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 ./bin/tc-connect variant feed     --db ticket_center [--channel 1] [--product 6] [--json out.json]
 ./bin/tc-connect variant composition --db ticket_center [--variant 18] [--channel 1] [--json out.json]
 ./bin/tc-connect variant bundle   --db ticket_center [--variant 21] [--json out.json]
+./bin/tc-connect variant supply   --db ticket_center [--variant 18] [--date 2026-11-18] [--channel 1] [--json out.json]
 ```
 
 | 子命令 | 回答什么问题 | 读什么 |
@@ -461,6 +462,7 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 | `feed` | C 端读模型里的变体行长什么样？ | `v_c_variant_feed` |
 | `composition` | 这张套餐由谁组成？（几份成人、几份儿童、各管几天） | `v_c_variant_composition` |
 | `bundle` | 这张套装（源侧整套卖）由谁组成？源侧整套能管几天？哪几天卖不掉、为什么？ | `v_variant_bundle` / `v_variant_bundle_part` |
+| `supply` | 单张 / 配方 / 套装三种供给形态并排看：各卖多少钱、卖不卖得掉、差在哪？ | `v_variant_supply_forms` |
 
 `variant bundle` 打印的是套装的三件事：成分构成（份数 / 人群编码 / 各自管几天）、
 有效期窗口（源侧整套几天 vs 成分窗口几天，盖不盖得住）、
@@ -469,8 +471,15 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 按份数组成，套装是**源侧把整套当一个 SKU 卖**。从 `coverage` 看不出是哪种，
 所以必须单独声明，不许靠猜。
 
-三个子命令都只读视图，**不重算任何口径**：有效天数走 `fn_variant_validity_days`，
-覆盖判定走 `fn_variant_covered`。在 Go 里再写一遍就是第二份实现 ——
+`variant supply` 把三种供给形态放在同一张表上对照：一行一个
+「可售单元 × 一天 × 一个渠道 × 一种形态」，打印源、成本、入场份数、
+以及卖不掉时的原因。这一层以前是空的 —— `v_variant_routing_candidates`
+与 `v_variant_source_coverage` 走 `fn_route_candidates`，而它只建模方向 A，
+**配方与套装的可售单元在那些视图里一行都没有**。不是它们不卖，是看不见它们在卖。
+
+这些子命令都只读视图，**不重算任何口径**：有效天数走 `fn_variant_validity_days`，
+覆盖判定走 `fn_variant_covered`，成本走 `fn_price_variant`，
+入场份数走 `fn_variant_composition`。在 Go 里再写一遍就是第二份实现 ——
 两份实现迟早分叉，而分叉的后果是「展示说两日票、发出来的是一天有效期的券」。
 
 `feed` 是 C 端请求链路真正读的那一层：差异事实（人群 / 轴取值 / 有效天数 / 退款口径）

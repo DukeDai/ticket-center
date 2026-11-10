@@ -444,6 +444,28 @@ FROM v_bundle_pool_demand
 ORDER BY order_id, supplier_session_id, source_ticket_type_id;
 
 
+\echo ''
+\echo '════════════════════════ K7. 三种供给形态对照（单张 / 配方 / 套装） ═════════════════════'
+-- 同一份交付，不同的供给方式、不同的成本、不同的缺口 —— 放在一张表上才看得见。
+-- gaps 为空 = 这一形态当天卖得掉；有 gaps = 说清楚差在哪。
+SELECT product_variant_id, variant_code, date, channel_id, supply_form,
+       supplier_codes, supplier_count, cost_in_target, currency,
+       component_count, admission_quantity, valid_days, can_fulfil, gaps
+FROM v_variant_supply_forms
+ORDER BY product_variant_id, date, channel_id, supply_form;
+
+\echo ''
+\echo '════════════════════════ K8. 声明过的形态不许在对照视图里消失 ═════════════════════'
+-- 声明了就必须在对照视图里出现（哪怕当天卖不掉）。
+-- 少了 = 有形态声明了却没进对照表 —— 那一路供给在运营侧是隐形的。
+SELECT d.product_variant_id, d.date, d.has_single, d.has_recipe, d.has_bundle,
+       (SELECT count(*) FROM v_variant_supply_forms f
+         WHERE f.product_variant_id = d.product_variant_id AND f.date = d.date) AS rows_in_forms
+FROM v_variant_declared_forms d
+WHERE d.has_single OR d.has_recipe OR d.has_bundle
+ORDER BY d.product_variant_id, d.date;
+
+\echo ''
 \echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'
 -- 种子数据用了显式 id，identity 序列必须同步推进。
 -- 序列停在 max(id) 之前时，应用第一次 INSERT 就报 duplicate key —— 这是「设计正确但跑不起来」的典型。

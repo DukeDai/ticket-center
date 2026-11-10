@@ -18,12 +18,13 @@ import (
 // compare  —— 可售单元之间差在哪（人群 / 轴 / 有效期 / 退款口径 / 有几个源能供）
 // coverage —— 每个可售单元有哪些源能供、缺什么（缺什么就是覆盖缺口）
 // feed     —— C 端读模型里的变体行（请求链路不许 join 主数据，差异靠它带出去）
+// supply   —— 三种供给形态（单张 / 配方 / 套装）在同一张表上对齐
 //
-// 三个子命令都只读视图，不算任何东西：
+// 这些子命令都只读视图，不算任何东西：
 // 轴取值、有效天数、覆盖判定都有唯一实现，Go 侧再写一遍就是第二份实现。
 func cmdVariant(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("variant 需要子命令：compare | coverage | feed | composition | bundle")
+		return fmt.Errorf("variant 需要子命令：compare | coverage | feed | composition | bundle | supply")
 	}
 	switch args[0] {
 	case "compare":
@@ -36,8 +37,10 @@ func cmdVariant(args []string) error {
 		return cmdVariantComposition(args[1:])
 	case "bundle":
 		return cmdVariantBundle(args[1:])
+	case "supply":
+		return cmdVariantSupply(args[1:])
 	default:
-		return fmt.Errorf("variant 未知子命令：%s（可用：compare | coverage | feed | composition | bundle）", args[0])
+		return fmt.Errorf("variant 未知子命令：%s（可用：compare | coverage | feed | composition | bundle | supply）", args[0])
 	}
 }
 
@@ -247,6 +250,76 @@ func cmdVariantBundle(args []string) error {
 	return nil
 }
 
+// cmdVariantSupply 把三种供给形态放在同一张表上对照。
+//
+// 形态不同、供给方式不同、成本口径也不同：
+// 单张是一个源 SKU 顶住这个可售单元，配方是多个源 SKU 按份数组成，
+// 套装是源侧自己把整套当一个 SKU 卖。
+// 放在一张表上，才能一眼看出「同一份交付，不同的供给方式、不同的成本、不同的缺口」。
+func cmdVariantSupply(args []string) error {
+	fs := flag.NewFlagSet("variant supply", flag.ExitOnError)
+	dbName := fs.String("db", "", "目标库")
+	variantID := fs.Int64("variant", 0, "变体 id（0 表示全部）")
+	date := fs.String("date", "", "日期 YYYY-MM-DD（空表示全部）")
+	channelID := fs.Int64("channel", 0, "渠道 id（0 表示全部渠道）")
+	jsonOut := fs.String("json", "", "结构化结果导出路径")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rows, err := variant.SupplyFormRows(store.New(fulfillDB(*dbName)), *variantID, *date, *channelID)
+	if err != nil {
+		return err
+	}
+	if *jsonOut != "" {
+		if err := writeJSON(*jsonOut, rows); err != nil {
+			return err
+		}
+		fmt.Printf("JSON 已导出：%s\n", *jsonOut)
+		return nil
+	}
+	if len(rows) == 0 {
+		fmt.Println("没有供给形态记录（可卖日来自 price_calendar，渠道来自上架行）。")
+		return nil
+	}
+	var lastVariant, lastChannel int64
+	var lastDate string
+	for i, r := range rows {
+		if r.ProductVariantID != lastVariant || r.ChannelID != lastChannel || r.Date != lastDate {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("%s（%s · 渠道 %d · %s）：\n",
+				r.VariantCode, orDash(r.ProductTitle), r.ChannelID, r.Date)
+			lastVariant, lastChannel, lastDate = r.ProductVariantID, r.ChannelID, r.Date
+		}
+		mark := "✗"
+		if r.CanFulfil {
+			mark = "✓"
+		}
+		fmt.Printf("    %s %-7s 源 %-16s 成本 %s %s · 入场 %s 份 · 有效 %d 天\n",
+			mark, r.SupplyForm, pgArrayText(r.SupplierCodes),
+			orDash(r.CostInTarget), r.Currency,
+			orDash(r.AdmissionQuantity), r.ValidDays)
+		if gaps := pgArrayText(r.Gaps); gaps != "" {
+			fmt.Printf("        缺口：%s\n", gaps)
+		}
+	}
+	return nil
+}
+
+// pgArrayText 把 PostgreSQL 的数组字面量（{a,b}）压成一行可读文本。
+// 空数组与空串都读成空串。
+func pgArrayText(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "{}" {
+		return ""
+	}
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	s = strings.ReplaceAll(s, "\"", "")
+	return strings.TrimSpace(s)
+}
+
 // jsonListText 把 jsonb 字符串数组压成一行可读文本（去掉括号与引号）。
 func jsonListText(s string) string {
 	s = strings.TrimSpace(s)
@@ -285,7 +358,7 @@ func supplierText(list string) string {
 }
 
 func init() {
-	register("variant", "差异模型的只读视图：对照 / 覆盖 / 读模型行 / 组合构成 / 套装构成", usageVariant, cmdVariant, 140)
+	register("variant", "差异模型的只读视图：对照 / 覆盖 / 读模型行 / 组合构成 / 套装构成 / 供给形态对照", usageVariant, cmdVariant, 140)
 }
 
 const usageVariant = `  tc-connect variant    compare  --db name [--product 6] [--json out.json]
@@ -293,4 +366,5 @@ const usageVariant = `  tc-connect variant    compare  --db name [--product 6] [
   tc-connect variant    feed     --db name [--channel 1] [--product 6] [--json out.json]
   tc-connect variant    composition --db name [--variant 18] [--channel 1] [--json out.json]
   tc-connect variant    bundle   --db name [--variant 21] [--json out.json]
+  tc-connect variant    supply   --db name [--variant 18] [--date 2026-11-18] [--channel 1] [--json out.json]
 `

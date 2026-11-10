@@ -2,7 +2,7 @@
 
 > 物理模型：`db/migrations/`（PostgreSQL 15+；基线 `001_baseline.sql` + 后续迁移文件）
 > 建库：`tc-connect migrate --db <库>`（迁移引擎：账本 + 内容校验和 + 幂等 + 并发互斥）
-> 验收：`db/verify.sql`（101 条不变量断言 + 17 组业务视图）
+> 验收：`db/verify.sql`（104 条不变量断言 + 19 组业务视图）
 > 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 50 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列。
 
 ---
@@ -229,7 +229,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 101 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条 + bundle 库存侧 2 条） |
+| `v_invariant_checks` | 104 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条 + bundle 库存侧 2 条 + 供给形态对照侧 3 条） |
 | `v_invariant_checks_core` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
@@ -257,6 +257,9 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_invariant_checks_bundle` | 套装侧 5 条有没有被破坏？（形态唯一 / 成分与声明对得上 / 有效期盖得住 / 成本分摊守恒 / 入场份数守恒） |
 | `v_bundle_pool_demand` | 套装池子上的需求对账（订单 × 池子：需求套数 / 落单时还剩多少 / 当时知不知道） |
 | `v_invariant_checks_bundle_020` | 套装库存侧 2 条有没有被破坏？（池子不跨源票种相加 / 需求按池子加总不许超卖） |
+| `v_variant_declared_forms` | 声明过的供给形态逐天在场次上有没有声明（单张 / 配方 / 套装各一列） |
+| `v_variant_supply_forms` | 三种供给形态并排对照（一行一个「可售单元 × 一天 × 一个渠道 × 一种形态」：源 / 成本 / 缺口 / 入场份数 / 候选明细） |
+| `v_invariant_checks_supply_forms_021` | 供给形态对照侧 3 条有没有被破坏？（形态不消失 / 成本与定价函数一致 / 份数与 C 端构成读模型一致） |
 | `v_invariant_checks_core_017` | 供给侧 45 条里 34 与 43 按套装口径修订后的那一版 |
 | `v_invariant_checks_inventory_017` | 库存预占侧 4 条里 69 与 72 按套装口径修订后的那一版 |
 | `v_invariant_checks_validity_017` | 有效期侧 3 条里 75 按套装口径修订后的那一版 |
@@ -619,6 +622,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `018_booking_request_payload_merge.sql` | `fn_request_booking()` 整体替换（请求报文改成合并而不是覆盖） | `fn_create_bookings()` 写的「我们打算发出去的请求」原来会被接入层实际发出的那一份覆盖掉，而且参数默认值是 `'{}'` 不是 NULL，连「不传报文」都会把整列洗掉。套装的套数与入场份数就靠这两个字段区分，洗掉之后「预订的单位是套还是份」在库里没处可查，对账只能靠猜（见 §26） |
 | `019_bundle_gap_days.sql` | `v_variant_bundle` 整体替换（缺口天数只数真卖不掉的那几天） | 缺口视图里混着「这一天能卖」（原因为空）的行，天数却把所有行都数进去 —— 套装天天能卖却报「有 N 天卖不掉」，理由还是空的，运营会去查一个不存在的问题 |
 | `020_bundle_inventory_scope.sql` | `fn_available_qty()` 三参重载整体替换（源票种范围收窄：源侧没报就说不知道）+ `fn_place_order()` 整体替换（套装预占按池子汇总）+ `v_bundle_pool_demand` + `v_invariant_checks_bundle_020` + `v_invariant_checks` 重建（不变量 100-101 新增） | 017 把套装走到了成交，但库存池上有两个洞：查套装余量时会掉到别的票种的数上（用儿童票的库存卖整套票），以及落单时逐明细各算各的（两条明细各要 1 套、池子只剩 1 套时两笔都放行 → 超卖）。两个洞都是**跨票种 / 跨明细加总的错**（见 §25.2） |
+| `021_variant_supply_forms.sql` | `v_variant_declared_forms` + `v_variant_supply_forms` 两个视图 + `v_invariant_checks_supply_forms_021` + `v_invariant_checks` 重建（不变量 102-104 新增） | 017 / 020 把套装走到了成交，但读侧还差一环：`v_variant_routing_candidates` 与 `v_variant_source_coverage` 走 `fn_route_candidates`，而它只建模方向 A —— **配方与套装的可售单元在那些视图里一行都没有**。不是它们不卖，是读侧看不见它们在卖。看不见的后果不是少一行，是看不懂：同一个商品下两个几乎一样的家庭套餐交付同样的内容，哪个在卖、卖不卖得掉、差在哪，运营侧一个都答不上来。对照视图把三种形态并排放在一张表上（见 §27） |
 
 读模型刷新写成一个 SQL 函数而不是散在调用方里，是有代价换来的：
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
@@ -751,7 +755,7 @@ CREATE VIEW v_invariant_checks AS
 - 并发：两个迁移进程同时跑，会话级互斥锁把它们串行化
 - `db/seed.sql` 完整装载（7 源 / 11 源商品 / 7 规范商品 / 11 映射 / 13 场次源绑定 / 6 订单 / 7 明细 / 6 预订 / 7 凭证 / 2 结算单 / 9 读模型卡片 / 11 日历格子 / 4 优惠券 / 4 购物车 / 4 库存预占 / 11 结算规格 / 10 持票人 / 6 评价 / 19 变体（含 2 张套餐）/ 25 源变体 / 29 覆盖映射 / 4 组合成分行）
 - `db/verify.sql` 全部视图正常输出
-- `v_invariant_checks` 101 条断言 **101/101 PASS**
+- `v_invariant_checks` 104 条断言 **104/104 PASS**
 - 状态机机制实测：非法流转（`expired → confirmed`）当场报错且数据未变；
   合法流转（`failed → pending`）写进去了，并在 `event_outbox` 留下 `BookingRetryScheduled`
 - C 端读模型漂移检测：9 张卡片全部 `drifted=f`（`drifted=true` 计数 0）
@@ -1709,3 +1713,41 @@ request_payload = booking.request_payload || COALESCE(p_request, '{}'::jsonb)
 
 我们写的事实留着，接入层这次发出去的报文盖在上面（同名键以接入层为准 ——
 它是这次请求的真实内容）。
+
+---
+
+## 27. 三种供给形态的对照视图
+
+异构融合有三种形态，各自都有读法（`v_variant_comparison` 认得差异，
+`v_variant_source_coverage` 认得方向 A 的覆盖，`v_variant_bundle` 认得套装），
+但**没有一个视图能把三种放在一起看**。
+
+根子在选源：`v_variant_routing_candidates` 与 `v_variant_source_coverage`
+都走 `fn_route_candidates`，而它只建模方向 A（一个源 SKU 覆盖多个可售单元）。
+配方与套装的可售单元在那些视图里**一行都没有** —— 不是它们不卖，
+是读侧看不见它们在卖。
+
+看不见的后果不是「少一行」，是**看不懂**：同一个商品下两个几乎一样的家庭套餐
+（配方 ¥1656.48 / 套装 ¥1740.00）交付的却是同样的 2×成人 1 日 + 1×儿童 1 日。
+哪个在卖、卖得掉不掉、差在哪，运营侧一个都答不上来。
+
+`v_variant_supply_forms` 一行一个「可售单元 × 一天 × 一个渠道 × 一种形态」，
+把三者的源、成本、缺口、入场份数并排放。三条口径：
+
+| 口径 | 规则 | 门禁 |
+|---|---|---|
+| 形态不许消失 | 声明过的形态必须在对照视图里出现（哪怕当天卖不掉）。少了 = 那一路供给在运营侧是隐形的，而它还在真实地卖 | 不变量 102 |
+| 成本取定价函数那个 | 单张形态的成本取 `route_rank = 1` 的候选，不是各源里的最小值 —— 选源按基准币种排序（`fn_route_candidates`），最小值按本行币种排，渠道币种不是基准币种时这两个「最小」不是同一个源 | 不变量 103 |
+| 份数只写一份 | `admission_quantity` 来自 `fn_variant_composition`（与 C 端构成读模型同一个来源），对照视图不重数 | 不变量 104 |
+
+形态整体的缺口只在这个形态**真的卖不掉**时才报；逐源的缺口放在候选明细里。
+混在一起就是「✓ 能供，却说当天没报价」—— 自相矛盾的话比没有话更坏。
+
+形态的取舍标准与 `fn_price_variant` 的两个分支逐条对齐：配方不可售的五种情况
+（成分缺价 / 成分不在同一场次 / 成分跨源 / 成分锁价 / 按团报价）、
+套装不可售的七种情况（当天没有源侧报价 / 没声明成分 / 没绑源场次 / 锁价 /
+有效期盖不住成分窗口 / 没有源侧票种 / 按团报价）。
+不一样的话，同一个可售单元在两处会说两件事。
+
+读侧是 `internal/variant.SupplyFormRows`（只读视图，不重算成本与份数），
+命令行是 `tc-connect variant supply`。

@@ -7,6 +7,7 @@
 //	Feed         —— v_c_variant_feed：C 端读模型里的变体行（请求链路不许 join 主数据，差异靠它带出来）
 //	Composition  —— v_c_variant_composition：组合由谁组成（几份成人、几份儿童、各管几天）
 //	Bundle       —— v_variant_bundle：套装由谁组成（源侧把整套当一个 SKU 卖的情形）
+//	SupplyForm   —— v_variant_supply_forms：三种供给形态在同一张表上对齐（单张 / 配方 / 套装）
 //
 // 为什么不自己算：轴取值、有效天数、覆盖判定都有唯一实现
 // （fn_variant_validity_days / fn_variant_covered），
@@ -129,6 +130,52 @@ type Bundle struct {
 	// GapDays 是卖不掉的天数，GapReasons 是原因清单。
 	GapDays    int    `json:"gap_days"`
 	GapReasons string `json:"gap_reasons"`
+}
+
+// SupplyForm 是一行「可售单元 × 一天 × 渠道 × 供给形态」的对照。
+//
+// 异构融合有三种形态，形态不同、供给方式不同、成本口径也不同：
+//
+//	single —— 一个源 SKU 顶住这个可售单元（方向 A）
+//	recipe —— 多个源 SKU 按份数组成这个可售单元（方向 B 的配方）
+//	bundle —— 源侧自己把整套当一个 SKU 卖（方向 B 的套装）
+//
+// 三者放在同一张表上对齐，是为了能一眼看出「同一份交付，不同的供给方式、
+// 不同的成本、不同的缺口」。形态各自的候选明细在 Candidates 里。
+type SupplyForm struct {
+	ProductVariantID int64  `json:"product_variant_id"`
+	VariantCode      string `json:"variant_code"`
+	VariantTitle     string `json:"variant_title"`
+	VariantRole      string `json:"variant_role"`
+	ProductID        int64  `json:"product_id"`
+	ProductCode      string `json:"product_code"`
+	ProductTitle     string `json:"product_title"`
+	Date             string `json:"date"`
+	ChannelID        int64  `json:"channel_id"`
+	// SupplyForm 是形态：single / recipe / bundle。
+	SupplyForm string `json:"supply_form"`
+	// SupplierCodes 是这一形态背后的源（可能多个）。
+	SupplierCodes string `json:"supplier_codes"`
+	SupplierCount int    `json:"supplier_count"`
+	// ExternalVariantIDs 是源侧的 SKU 标识。
+	ExternalVariantIDs string `json:"external_variant_ids"`
+	// SourceCurrencies 是源币种。组合可能跨币种（每个成分各自留痕）。
+	SourceCurrencies string `json:"source_currencies"`
+	// CostInTarget 是成本折算到本行币种；Currency 是本行币种。
+	CostInTarget string `json:"cost_in_target"`
+	Currency     string `json:"currency"`
+	BaseCurrency string `json:"base_currency"`
+	// ComponentCount 是成分个数，AdmissionQuantity 是入场份数（2 成人 + 1 儿童 = 3）。
+	ComponentCount    int    `json:"component_count"`
+	AdmissionQuantity string `json:"admission_quantity"`
+	AudienceCodes     string `json:"audience_codes"`
+	ValidDays         int    `json:"valid_days"`
+	// CanFulfil 是这一形态当天卖不卖得掉。
+	CanFulfil bool `json:"can_fulfil"`
+	// Gaps 是卖不掉的原因（为空就是没有缺口）。
+	Gaps string `json:"gaps"`
+	// Candidates 是候选明细（JSON），每个源一条：单价、币种、成本、覆盖声明。
+	Candidates string `json:"candidates"`
 }
 
 // BundlePart 是一行套装成分。
@@ -399,6 +446,80 @@ func CompositionRows(db *store.DB, channelID, variantID int64) ([]Component, err
 			Quantity:           r["quantity"],
 			AudienceCode:       r["audience_code"],
 			ValidDays:          atoi(r["valid_days"]),
+		})
+	}
+	return out, nil
+}
+
+// SupplyFormRows 返回三种供给形态的对照行。
+//
+// variantID / date / channelID 为 0 或空表示不按那一维过滤。
+// 它只读视图，不重算成本、不重算入场份数 ——
+// 成本由定价函数算（fn_price_variant），份数由 fn_variant_composition 推，
+// 两样都在库里算好了，这里只带出来。
+func SupplyFormRows(db *store.DB, variantID int64, date string, channelID int64) ([]SupplyForm, error) {
+	sql := `SELECT product_variant_id, variant_code, variant_title, variant_role,
+	               product_id, product_code, product_title, date::text AS date,
+	               channel_id, supply_form,
+	               COALESCE(supplier_codes::text, '') AS supplier_codes,
+	               supplier_count,
+	               COALESCE(external_variant_ids::text, '') AS external_variant_ids,
+	               COALESCE(source_currencies::text, '') AS source_currencies,
+	               COALESCE(cost_in_target::text, '') AS cost_in_target,
+	               currency, base_currency,
+	               component_count,
+	               admission_quantity::text AS admission_quantity,
+	               COALESCE(audience_codes::text, '') AS audience_codes,
+	               valid_days, can_fulfil,
+	               COALESCE(gaps::text, '') AS gaps,
+	               COALESCE(candidates::text, '[]') AS candidates
+	          FROM v_variant_supply_forms`
+	var where []string
+	if variantID > 0 {
+		where = append(where, fmt.Sprintf("product_variant_id = %d", variantID))
+	}
+	if strings.TrimSpace(date) != "" {
+		where = append(where, fmt.Sprintf("date = DATE '%s'", strings.TrimSpace(date)))
+	}
+	if channelID > 0 {
+		where = append(where, fmt.Sprintf("channel_id = %d", channelID))
+	}
+	if len(where) > 0 {
+		sql += " WHERE " + strings.Join(where, " AND ")
+	}
+	sql += " ORDER BY product_variant_id, date, channel_id, supply_form"
+
+	rows, err := db.Rows(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SupplyForm, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, SupplyForm{
+			ProductVariantID:   atoi64(r["product_variant_id"]),
+			VariantCode:        r["variant_code"],
+			VariantTitle:       r["variant_title"],
+			VariantRole:        r["variant_role"],
+			ProductID:          atoi64(r["product_id"]),
+			ProductCode:        r["product_code"],
+			ProductTitle:       r["product_title"],
+			Date:               r["date"],
+			ChannelID:          atoi64(r["channel_id"]),
+			SupplyForm:         r["supply_form"],
+			SupplierCodes:      r["supplier_codes"],
+			SupplierCount:      atoi(r["supplier_count"]),
+			ExternalVariantIDs: r["external_variant_ids"],
+			SourceCurrencies:   r["source_currencies"],
+			CostInTarget:       r["cost_in_target"],
+			Currency:           r["currency"],
+			BaseCurrency:       r["base_currency"],
+			ComponentCount:     atoi(r["component_count"]),
+			AdmissionQuantity:  r["admission_quantity"],
+			AudienceCodes:      r["audience_codes"],
+			ValidDays:          atoi(r["valid_days"]),
+			CanFulfil:          atobool(r["can_fulfil"]),
+			Gaps:               r["gaps"],
+			Candidates:         r["candidates"],
 		})
 	}
 	return out, nil

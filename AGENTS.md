@@ -18,7 +18,7 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
 ## 硬约束
 
 1. **SPEC.md 是合同。** 改任何业务行为，必须同步改 `SPEC.md` 对应章节；改领域模型必须同步改
-   `docs/ddd.md`；改表结构必须同步改 `docs/schema-design.md`。规格里列的 101 条不变量不得在改动中丢失。
+   `docs/ddd.md`；改表结构必须同步改 `docs/schema-design.md`。规格里列的 104 条不变量不得在改动中丢失。
 2. **不变量是门禁。** `v_invariant_checks` 里任何一条 `actual > 0` 即为数据违规，
    `db/verify.sql` 必须全绿才能提交。
 3. **DDL 只增不改，而且由机制保证。** 物理模型的唯一来源是 `db/migrations/NNN_*.sql`。
@@ -267,6 +267,30 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
     - **缺口要说清（`v_bundle_gap`）。** 卖不掉要说出为什么：
       没有源侧报价 / 没有规范场次 / 没绑源场次 / 没有源侧票种 /
       有效期盖不住 / 可售数未知。看不出来就说看不出来，不猜。
+30. **三种供给形态必须放在同一张表上对照（021）。**
+    - **读侧要看得见全部形态。** `v_variant_routing_candidates` 与
+      `v_variant_source_coverage` 走 `fn_route_candidates`，而它只建模方向 A ——
+      **配方与套装的可售单元在那些视图里一行都没有**。不是它们不卖，
+      是读侧看不见它们在卖。看不见的后果不是少一行，是看不懂：
+      哪个在卖、卖不卖得掉、差在哪，运营侧一个都答不上来。
+      对照视图是 `v_variant_supply_forms`（一行一个「可售单元 × 一天 × 一个渠道 × 一种形态」）。
+    - **形态的取舍标准与定价函数逐条对齐。** 配方不可售的五种情况
+      （成分缺价 / 成分不在同一场次 / 成分跨源 / 成分锁价 / 按团报价）、
+      套装不可售的七种情况（当天没有源侧报价 / 没声明成分 / 没绑源场次 / 锁价 /
+      有效期盖不住成分窗口 / 没有源侧票种 / 按团报价），
+      与 `fn_price_variant` 的两个分支逐条相同 —— 不一样的话，
+      同一个可售单元在两处会说两件事。
+    - **成本取定价函数那个。** 单张形态的成本取 `route_rank = 1` 的那个候选，
+      不是各源里的最小值：选源按基准币种排序（`fn_route_candidates`），
+      最小值按本行币种排，渠道币种不是基准币种时这两个「最小」不是同一个源
+      （不变量 103）。
+    - **能供的时候不许报缺口。** 形态整体的缺口只在这个形态**真的卖不掉**时才报；
+      逐源的缺口在候选明细里。混在一起就是「✓ 能供，却说当天没报价」——
+      自相矛盾的话比没有话更坏。
+    - **入场份数只写一份。** `admission_quantity` 来自 `fn_variant_composition`
+      （与 C 端构成读模型同一个来源），不许自己重数（不变量 104）。
+    - **对照视图只读，不重算。** Go 侧是 `internal/variant.SupplyFormRows`
+      （只读 `v_variant_supply_forms`，不重算成本、不重算份数）。
 
 ## 目录
 
@@ -277,7 +301,7 @@ docs/c-end-model.md           C 端：读模型、展示内容、购买漏斗
 docs/schema-design.md         物理模型：选型论证、表清单、索引策略、演进路线
 docs/connector-contract.md    供应源接入端口契约 + 七源差异矩阵 + §9 接入层实现现状
 docs/integrations.md          接入层（Go）：包结构、设计纪律、CLI 用法
-db/migrations/                全部 DDL（77 业务表 + 1 迁移账本 / 50 视图 / 227 索引 / 39 触发器 / 124 函数）
+db/migrations/                全部 DDL（77 业务表 + 1 迁移账本 / 53 视图 / 227 索引 / 39 触发器 / 124 函数）
 db/migrations/001_baseline.sql 建库基线（冻结，不许改）；后续结构变更走新增的 NNN_*.sql
 db/migrations/002_*.sql        读模型刷新作业（fn_refresh_read_models）—— 迁移机制的第一个真实用例
 db/migrations/003_*.sql        交易侧状态机（state_transition + 守卫/事件触发器）
@@ -298,8 +322,9 @@ db/migrations/017_*.sql        套装（supplier_variant_bundle）—— 异构�
 db/migrations/018_*.sql        预订请求报文改成合并（fn_request_booking）—— 事实不许被一次调用洗掉
 db/migrations/019_*.sql        套装缺口天数只数真卖不掉的那几天
 db/migrations/020_*.sql        套装库存池口径收紧（池子不跨源票种 + 需求按池子加总）—— 补上 017 的两个超卖口子
+db/migrations/021_*.sql        三种供给形态对照（v_variant_supply_forms）—— 异构融合读侧的最后一里
 db/seed.sql                   种子数据（7 源 / 7 规范商品 / 29 映射 / 14 场次源绑定 / 10 订单 / 9 读模型卡片 / 21 变体（含 2 张套餐 + 1 张套装）/ 26 源变体 / 4 组合成分行；售价金额由定价函数生成）
-db/verify.sql                 验收查询（17 组视图 + 101 条不变量断言）
+db/verify.sql                 验收查询（19 组视图 + 104 条不变量断言）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant
 internal/
   apperr/                     错误四分类 + 缺失凭证 + 端点未确认
@@ -322,7 +347,7 @@ internal/
   refund/                     退款：发起 / 放行 / 完成（只调库里的函数，不自己判资格）
   redemption/                 核销：扫票 / 查券（只调库里的函数，不自己判能不能进场、不自己算扣多少额度）
   inventory/                  库存：查可售 / 预占 / 放掉（只调库里的函数，不自己算可售数、不自己判够不够）
-  variant/                    异构差异读侧：对照表 / 源覆盖缺口 / C 端读视图 / 套装构成（只读视图，不重算有效天数与覆盖判定）
+  variant/                    异构差异读侧：对照表 / 源覆盖缺口 / C 端读视图 / 套装构成 / 三种供给形态对照（只读视图，不重算有效天数、覆盖判定、成本与份数）
   coverage/                   覆盖语义读侧：源变体覆盖住哪些可售单元（判定走库里的 fn_variant_covered）
   compose/                    组合映射写侧：组合表达式 → 配方（核组件、核数量；覆盖判定走库里的 fn_variant_covered）
   mock/                       Trip.com 分销侧协议 mock（标准库 net/http）
@@ -361,7 +386,7 @@ psql -h 127.0.0.1 -d ticket_center -v ON_ERROR_STOP=1 -f db/verify.sql
 演练器通过 `tc-connect normalize` 消费它的输出：
 
 ```bash
-make dryrun                                  # 演练 + 终端报告（101 条不变量自检）
+make dryrun                                  # 演练 + 终端报告（104 条不变量自检）
 python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 生成前端 POC
 ```
 
@@ -388,6 +413,7 @@ make order-demo                     # 下单链路端到端演示（下单 → �
 ./bin/tc-connect variant coverage --db ticket_center --variant 14 # 看哪些源能供、缺什么
 ./bin/tc-connect variant feed    --db ticket_center --channel 1   # 看 C 端读模型里的变体行
 ./bin/tc-connect variant bundle  --db ticket_center --variant 21   # 看套装（源侧把整套当一个 SKU 卖）由谁组成
+./bin/tc-connect variant supply  --db ticket_center --variant 18   # 看单张 / 配方 / 套装三种供给形态的对照
 ./bin/tc-connect compose plan    --db ticket_center --source globaltix --fixture fixtures/globaltix_catalog.json   # 组合配方能不能解出来
 ```
 
@@ -419,7 +445,7 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] `tc-connect migrate --status` 里没有「内容漂移」
 - [ ] `db/seed.sql` 完整装载
 - [ ] `db/verify.sql` 全部视图正常输出
-- [ ] `v_invariant_checks` 101 条全 PASS（`db/verify.sql` 的 F 段会 `RAISE EXCEPTION`）
+- [ ] `v_invariant_checks` 104 条全 PASS（`db/verify.sql` 的 F 段会 `RAISE EXCEPTION`）
 - [ ] 改动状态机 → `state_transition` 表 + `SPEC.md` §5 同步更新，且非法流转仍被触发器挡住
 - [ ] 改动下单口径 → `fn_place_order` + `SPEC.md` §5.5 同步更新，且幂等与实名校验仍生效
 - [ ] 改动履约口径 → `005/006` 迁移 + `SPEC.md` §5.6 同步更新，且幂等、重复收款、票码张数、源场次绑定仍生效
@@ -436,9 +462,10 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] 改动预订请求报文的口径 → `018` 迁移 + `SPEC.md` §5.6 同步更新，且「我们写的事实不许被接入层发的报文覆盖」仍生效
 - [ ] 改动套装缺口天数的口径 → `019` 迁移 + `SPEC.md` §5.15 同步更新，且「缺口天数只数真卖不掉的那几天」仍生效
 - [ ] 改动套装库存池的口径 → `020` 迁移 + `SPEC.md` §4.19 / §5.15 同步更新，且「池子不跨源票种相加、需求按池子加总、不知道不拦但留痕」仍生效
+- [ ] 改动供给形态对照的口径 → `021` 迁移 + `SPEC.md` §4.20 / §5.16 同步更新，且「形态不消失、成本与定价函数一致、份数与 C 端构成读模型一致、能供时不报缺口」仍生效
 - [ ] `make test` 全绿（Go 单元测试）
 - [ ] `make mock` 协议自检 14/14 全 PASS
-- [ ] `python3 scripts/mapping_dryrun.py` 演练库 101/101 全 PASS
+- [ ] `python3 scripts/mapping_dryrun.py` 演练库 104/104 全 PASS
 - [ ] `SPEC.md` 变更记录追加一行
 - [ ] `docs/schema-design.md` 的表清单/索引统计数字同步更新
 - [ ] `docs/ddd.md` 若涉及聚合边界或状态机，同步更新
