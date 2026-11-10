@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"ticket-center/internal/store"
 )
@@ -478,8 +479,14 @@ func SupplyFormRows(db *store.DB, variantID int64, date string, channelID int64)
 	if variantID > 0 {
 		where = append(where, fmt.Sprintf("product_variant_id = %d", variantID))
 	}
-	if strings.TrimSpace(date) != "" {
-		where = append(where, fmt.Sprintf("date = DATE '%s'", strings.TrimSpace(date)))
+	if d := strings.TrimSpace(date); d != "" {
+		// 日期是拼进 SQL 的（psql 子进程没有占位符），所以先把它校验成一个
+		// 只可能由数字和短横组成的值再拼。校验不过就报错，不猜、不糊过去。
+		parsed, err := time.Parse("2006-01-02", d)
+		if err != nil {
+			return nil, fmt.Errorf("日期格式不对（要 YYYY-MM-DD）：%q", d)
+		}
+		where = append(where, fmt.Sprintf("date = DATE '%s'", parsed.Format("2006-01-02")))
 	}
 	if channelID > 0 {
 		where = append(where, fmt.Sprintf("channel_id = %d", channelID))

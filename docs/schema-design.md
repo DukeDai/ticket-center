@@ -2,8 +2,8 @@
 
 > 物理模型：`db/migrations/`（PostgreSQL 15+；基线 `001_baseline.sql` + 后续迁移文件）
 > 建库：`tc-connect migrate --db <库>`（迁移引擎：账本 + 内容校验和 + 幂等 + 并发互斥）
-> 验收：`db/verify.sql`（104 条不变量断言 + 19 组业务视图）
-> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 50 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列。
+> 验收：`db/verify.sql`（107 条不变量断言 + 21 组业务视图）
+> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 54 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列。
 
 ---
 
@@ -214,7 +214,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 ### 4.10 运维（3）
 `event_outbox` · `notification_outbox` · `app_setting`
 
-### 4.11 视图（48）
+### 4.11 视图（54）
 
 | 视图 | 回答什么问题 |
 |---|---|
@@ -229,7 +229,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 104 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条 + bundle 库存侧 2 条 + 供给形态对照侧 3 条） |
+| `v_invariant_checks` | 107 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条 + bundle 库存侧 2 条 + 供给形态对照侧 3 条 + 供给形态不许缩小侧 3 条） |
 | `v_invariant_checks_core` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
@@ -260,10 +260,18 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_variant_declared_forms` | 声明过的供给形态逐天在场次上有没有声明（单张 / 配方 / 套装各一列） |
 | `v_variant_supply_forms` | 三种供给形态并排对照（一行一个「可售单元 × 一天 × 一个渠道 × 一种形态」：源 / 成本 / 缺口 / 入场份数 / 候选明细） |
 | `v_invariant_checks_supply_forms_021` | 供给形态对照侧 3 条有没有被破坏？（形态不消失 / 成本与定价函数一致 / 份数与 C 端构成读模型一致） |
+| `v_invariant_checks_supply_form_shrink_022` | 供给形态不许缩小侧 3 条有没有被破坏？（成分不许消失 / 源 SKU 下架时配方不许还能卖 / 源 SKU 下架时套装不许还能卖） |
 | `v_invariant_checks_core_017` | 供给侧 45 条里 34 与 43 按套装口径修订后的那一版 |
 | `v_invariant_checks_inventory_017` | 库存预占侧 4 条里 69 与 72 按套装口径修订后的那一版 |
 | `v_invariant_checks_validity_017` | 有效期侧 3 条里 75 按套装口径修订后的那一版 |
 | `v_invariant_checks_combo_017` | 组合售卖侧 7 条里 84 按套装口径修订后的那一版 |
+| `v_invariant_checks_hardening` | 收紧口径侧 2 条有没有被破坏？（退款必须先放行 / 票码不许是连号派生的） |
+| `v_invariant_checks_core_base` | 核心不变量留底（001 的口径；015 修订了 16 与 34 —— 组合的追溯路径是配方） |
+| `v_invariant_checks_combo_base` | 组合交易侧不变量留底（013 的口径；014 在此基础上加了 87 / 88） |
+| `v_invariant_checks_fulfill_base` | 履约侧不变量留底（013 修订了 58 / 60：组合按成分行算） |
+| `v_invariant_checks_inventory_base` | 库存侧不变量留底（013 修订了 69 / 72：组合按成分行算） |
+| `v_invariant_checks_validity_base` | 有效期与覆盖侧不变量留底（013 修订了 75：组合按成分行判覆盖） |
+| `v_invariant_checks_variant` | 变体侧 45 条业务不变量自检（012 修订了 29：组合变体豁免） |
 
 ### 4.12 C 端域（20，见 `docs/c-end-model.md`）
 
@@ -515,7 +523,7 @@ CONSTRAINT coupon_usage_ck       CHECK (used_count >= 0 AND (usage_limit IS NULL
 
 ## 8. 索引与触发器清单（实测）
 
-- 表 74 / 视图 37 / 索引 217 / 触发器 35 / CHECK 约束 94 / 序列 65
+- 表 77 / 视图 54 / 索引 227 / 触发器 39 / CHECK 约束 99 / 序列 67
 - `updated_at` 由统一触发器 `fn_set_updated_at()` 维护，避免应用层漏更新
 - 交易侧状态机由 12 个触发器守着（4 张表 × 守卫 + 事件）：非法流转当场报错，状态一变就落一条领域事件
 - 订单关上（`cancelled` / `expired` / `refunded`）时由 `trg_release_holds_on_order_close` 把它的库存预占置为 `voided`：承诺要放掉，但「卖出过」这个事实不许被改写
@@ -623,6 +631,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `019_bundle_gap_days.sql` | `v_variant_bundle` 整体替换（缺口天数只数真卖不掉的那几天） | 缺口视图里混着「这一天能卖」（原因为空）的行，天数却把所有行都数进去 —— 套装天天能卖却报「有 N 天卖不掉」，理由还是空的，运营会去查一个不存在的问题 |
 | `020_bundle_inventory_scope.sql` | `fn_available_qty()` 三参重载整体替换（源票种范围收窄：源侧没报就说不知道）+ `fn_place_order()` 整体替换（套装预占按池子汇总）+ `v_bundle_pool_demand` + `v_invariant_checks_bundle_020` + `v_invariant_checks` 重建（不变量 100-101 新增） | 017 把套装走到了成交，但库存池上有两个洞：查套装余量时会掉到别的票种的数上（用儿童票的库存卖整套票），以及落单时逐明细各算各的（两条明细各要 1 套、池子只剩 1 套时两笔都放行 → 超卖）。两个洞都是**跨票种 / 跨明细加总的错**（见 §25.2） |
 | `021_variant_supply_forms.sql` | `v_variant_declared_forms` + `v_variant_supply_forms` 两个视图 + `v_invariant_checks_supply_forms_021` + `v_invariant_checks` 重建（不变量 102-104 新增） | 017 / 020 把套装走到了成交，但读侧还差一环：`v_variant_routing_candidates` 与 `v_variant_source_coverage` 走 `fn_route_candidates`，而它只建模方向 A —— **配方与套装的可售单元在那些视图里一行都没有**。不是它们不卖，是读侧看不见它们在卖。看不见的后果不是少一行，是看不懂：同一个商品下两个几乎一样的家庭套餐交付同样的内容，哪个在卖、卖不卖得掉、差在哪，运营侧一个都答不上来。对照视图把三种形态并排放在一张表上（见 §27） |
+| `022_supply_form_shrink_guard.sql` | `fn_combo_components()` / `fn_bundle_components()` 整体替换（成分行不因源 SKU 下架而消失：源的可用性从「决定这一行在不在」改成「决定这一行有没有价」）+ `v_variant_supply_forms` 整体替换（形态行留着，缺口点名「源 SKU 已下架」，残缺套餐不许报成本）+ `v_invariant_checks_supply_form_shrink_022` + `v_invariant_checks` 重建（不变量 105-107 新增） | 成分解析时写的是 `JOIN supplier_variant ... AND status = 'active'`：源侧把某个 SKU 下架时，那一行直接消失。配方于是静悄悄地变成了一个更小的套餐 —— 少一个成分就按剩下的成分重新定价（收 3 份入场的钱，出 1 份票），C 端构成读模型还写着 2 个成分 / 3 份入场，读侧与写侧分叉；套装的形态行则整个从对照视图里消失 —— 不是「卖不掉」，是「看不见」。源下架是事实，改不了源侧，但缺一个成分的套餐不是这个套餐（见 §28） |
 
 读模型刷新写成一个 SQL 函数而不是散在调用方里，是有代价换来的：
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
@@ -755,7 +764,7 @@ CREATE VIEW v_invariant_checks AS
 - 并发：两个迁移进程同时跑，会话级互斥锁把它们串行化
 - `db/seed.sql` 完整装载（7 源 / 11 源商品 / 7 规范商品 / 11 映射 / 13 场次源绑定 / 6 订单 / 7 明细 / 6 预订 / 7 凭证 / 2 结算单 / 9 读模型卡片 / 11 日历格子 / 4 优惠券 / 4 购物车 / 4 库存预占 / 11 结算规格 / 10 持票人 / 6 评价 / 19 变体（含 2 张套餐）/ 25 源变体 / 29 覆盖映射 / 4 组合成分行）
 - `db/verify.sql` 全部视图正常输出
-- `v_invariant_checks` 104 条断言 **104/104 PASS**
+- `v_invariant_checks` 107 条断言 **107/107 PASS**
 - 状态机机制实测：非法流转（`expired → confirmed`）当场报错且数据未变；
   合法流转（`failed → pending`）写进去了，并在 `event_outbox` 留下 `BookingRetryScheduled`
 - C 端读模型漂移检测：9 张卡片全部 `drifted=f`（`drifted=true` 计数 0）
@@ -1751,3 +1760,63 @@ request_payload = booking.request_payload || COALESCE(p_request, '{}'::jsonb)
 
 读侧是 `internal/variant.SupplyFormRows`（只读视图，不重算成本与份数），
 命令行是 `tc-connect variant supply`。
+
+## 28. 源 SKU 下架时形态不许缩小
+
+§27 把三种形态放进了一张表，但那层表有一个前提：**成分行存在**。
+而成分解析时写的是：
+
+```sql
+JOIN supplier_variant sv
+  ON sv.id = r.supplier_variant_id
+ AND sv.status = 'active'          -- ← 这一行决定了成分在不在
+```
+
+源侧把某个 SKU 下架时，那一行直接消失。后果分两种：
+
+- **配方**：成分少了一个，定价函数看到的是「少一个成分的套餐」，
+  于是按剩下的成分重新定价 —— 收 3 份入场的钱，出 1 份票。
+  而 C 端构成读模型还写着 2 个成分 / 3 份入场，读侧与写侧分叉。
+- **套装**：整套的成分全没了，形态行从对照视图里**消失** ——
+  不是「卖不掉」，是「看不见」。
+
+`fn_price_variant` 的 `n_priced = n_parts` 门禁本该挡住第二种，但门禁看到的是
+**已经缩小的集合**：2 个成分里 2 个都有价，`n_priced = n_parts` 通过。
+门禁守的是「配齐了没有」，而这里的问题是「集合本身就少了」。
+
+改法只有一处语义：**源的可用性从「决定这一行在不在」改成「决定这一行有没有价」**。
+成分行改用左连接源 SKU，源下架时这一行还在，只是没有报价。
+
+```sql
+LEFT JOIN LATERAL (
+      SELECT s.supplier_product_id, s.is_price_locked,
+             (s.status = 'active') AS source_active
+        FROM supplier_variant s
+       WHERE s.id = r.supplier_variant_id) sv ON true
+```
+
+改完之后不需要另写一套判定：`n_priced = n_parts` 这一条现成的门禁就把
+残缺的套餐挡住（少一个成分 → 有价成分数 < 声明成分数 → 门禁不过）。
+函数的签名一个字没动，「源 SKU 在不在架」由调用方自己判。
+
+四条口径：
+
+| 口径 | 规则 | 门禁 |
+|---|---|---|
+| 成分不许消失 | 声明过的成分解析后还是那些行，一个不少 | 不变量 105 |
+| 少了价的成分 = 整个形态卖不掉 | 源下架时配方不许还能卖（对照视图说不可售，定价函数不给价） | 不变量 106 |
+| 套装的源 SKU 下架 = 套装卖不掉 | 与 106 同一件事的另一种形态 | 不变量 107 |
+| 形态不许从对照视图里消失 | 单张 / 配方 / 套装都一样：源下架时形态行仍然在，`can_fulfil = false` | 不变量 102 |
+
+其余三条细则：
+
+- **残缺的套餐不许报成本。** 成分缺一个时 `cost_in_target` 留空 ——
+  残缺套餐的钱不是这个套餐的钱，留着会让运营拿一个残缺套餐的钱去对账。
+- **理由不许互相盖住。** 源下架时只报「成分的源 SKU 已下架」，
+  不叠「成分当天没有报价」—— 源还在、只是下架了，报价其实还在。
+- **源侧下架是事实，我们改不了源侧。** 不许为了留住事实去改写历史订单，
+  也不许拿「源下架了」当借口把套餐缩小着卖。宁可少卖，不可卖错。
+
+验收在 `db/verify.sql` 的 K9 段：把配方与套装的源 SKU 全部下架，
+比对下架前后的形态行数（必须一行不少），看缺口是否点名，
+看定价函数是否还给价。跑在事务里，最后回滚。

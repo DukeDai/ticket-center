@@ -477,6 +477,14 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 与 `v_variant_source_coverage` 走 `fn_route_candidates`，而它只建模方向 A，
 **配方与套装的可售单元在那些视图里一行都没有**。不是它们不卖，是看不见它们在卖。
 
+**源 SKU 下架时形态行不会消失**（022）。以前成分解析用
+`JOIN supplier_variant ... AND status = 'active'`，源侧一下架那行就没了：
+配方的成分少一个就按剩下的成分重新定价，套装的形态行整个不见。
+现在成分行留着（只是没有价），形态行也留着，`can_fulfil = false`，
+缺口点名「成分的源 SKU 已下架」/「套装的源 SKU 已下架」。
+单张形态里某个源下架时，缺口落在 `candidates` 里逐源看 ——
+形态整体仍能供就不报形态级缺口（能供的时候不报缺口）。
+
 这些子命令都只读视图，**不重算任何口径**：有效天数走 `fn_variant_validity_days`，
 覆盖判定走 `fn_variant_covered`，成本走 `fn_price_variant`，
 入场份数走 `fn_variant_composition`。在 Go 里再写一遍就是第二份实现 ——

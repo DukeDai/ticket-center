@@ -130,3 +130,86 @@ func TestAdmissionQuantityMatchesTheCompositionFeed(t *testing.T) {
 		t.Fatal("种子里没有配方/套装形态，份数一致性没被验到")
 	}
 }
+
+// TestSupplyFormSurvivesASourceGoingOffShelf 守住「形态不许因为源 SKU 下架而消失」。
+//
+// 源侧把 SKU 下架是事实，我们改不了源侧。但这个可售单元仍然被声明着，
+// 只是现在没人供 —— 看得见，而且不许还说能供。
+//
+// 之前这里会静悄悄地变成另一个东西：
+//   - 配方少一个成分就按剩下的成分重新定价（收 3 份入场的钱，出 1 份票）；
+//   - 套装的形态行整个从对照视图里消失（「没人供」和「没人看得见」长得一样）。
+func TestSupplyFormSurvivesASourceGoingOffShelf(t *testing.T) {
+	db := seeded(t)
+
+	// 拿一个配方的成分，以及它顶着的那个源 SKU。
+	variantID, err := db.Scalar(`SELECT product_variant_id::text
+	                               FROM supplier_variant_composition
+	                              WHERE status = 'active'
+	                              ORDER BY product_variant_id
+	                              LIMIT 1;`)
+	if err != nil || variantID == "" {
+		t.Fatalf("种子里没有配方成分，跳过这条：%v", err)
+	}
+	sourceVariantID, err := db.Scalar(`SELECT supplier_variant_id::text
+	                                   FROM supplier_variant_composition
+	                                  WHERE status = 'active'
+	                                    AND product_variant_id = ` + variantID + `
+	                                  ORDER BY id
+	                                  LIMIT 1;`)
+	if err != nil || sourceVariantID == "" {
+		t.Fatalf("配方 %s 没有成分的源 SKU：%v", variantID, err)
+	}
+
+	before, err := variant.SupplyFormRows(db, 0, "", 0)
+	if err != nil {
+		t.Fatalf("查供给形态失败：%v", err)
+	}
+	recipeBefore := formOf(before, variantID, "recipe")
+	if recipeBefore == nil || !recipeBefore.CanFulfil {
+		t.Fatalf("配方 %s 在源 SKU 下架前就该是能供的：%+v", variantID, recipeBefore)
+	}
+
+	if err := db.Exec(`UPDATE supplier_variant SET status = 'inactive' WHERE id = ` + sourceVariantID + `;`); err != nil {
+		t.Fatalf("把源 SKU 下架失败：%v", err)
+	}
+
+	after, err := variant.SupplyFormRows(db, 0, "", 0)
+	if err != nil {
+		t.Fatalf("查供给形态失败：%v", err)
+	}
+	recipeAfter := formOf(after, variantID, "recipe")
+	if recipeAfter == nil {
+		t.Fatalf("配方 %s 的形态行在源 SKU 下架后不见了（形态不许消失）", variantID)
+	}
+	if recipeAfter.CanFulfil {
+		t.Fatalf("配方 %s 的成分有一个源 SKU 已下架，却还说能供", variantID)
+	}
+	if !strings.Contains(recipeAfter.Gaps, "下架") {
+		t.Fatalf("配方 %s 的缺口没说清是源 SKU 下架了：%s", variantID, recipeAfter.Gaps)
+	}
+
+	// 定价函数不许再给这个套餐定价 —— 少一个成分的套餐不是这个套餐。
+	priced, err := db.Scalar(`SELECT count(*)::text
+	                          FROM fn_price_variant(` + variantID + `::bigint,
+	                                                (SELECT min(date)::text FROM price_calendar
+	                                                  WHERE product_variant_id = ` + variantID + `::bigint
+	                                                    AND status = 'active')::date,
+	                                                1, 1);`)
+	if err != nil {
+		t.Fatalf("调定价函数失败：%v", err)
+	}
+	if priced != "0" {
+		t.Fatalf("配方 %s 的成分少了一个，定价函数还给价（收了 3 份入场钱出 1 份票）：%s 行", variantID, priced)
+	}
+}
+
+// formOf 在对照行里找某个可售单元的某种形态。
+func formOf(rows []variant.SupplyForm, variantID, form string) *variant.SupplyForm {
+	for i := range rows {
+		if strconv.FormatInt(rows[i].ProductVariantID, 10) == variantID && rows[i].SupplyForm == form {
+			return &rows[i]
+		}
+	}
+	return nil
+}

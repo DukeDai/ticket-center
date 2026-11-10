@@ -466,6 +466,62 @@ WHERE d.has_single OR d.has_recipe OR d.has_bundle
 ORDER BY d.product_variant_id, d.date;
 
 \echo ''
+\echo '════════════════════════ K9. 源 SKU 下架时形态不许缩小（022） ═════════════════════'
+-- 源侧把某个 SKU 下架是事实，我们改不了源侧。但规矩是：
+--   - 声明过的成分不许消失（成分行留着，只是没有价）；
+--   - 形态行不许从对照视图里消失（看得见，只是不可售）；
+--   - 缺口要点名「源 SKU 已下架」；
+--   - 定价函数不许再给这个套餐定价（少一个成分的套餐不是这个套餐）。
+--
+-- 这一节在一个事务里做，跑完回滚：验收查询不改数据。
+BEGIN;
+
+CREATE TEMP TABLE k9_before ON COMMIT DROP AS
+SELECT product_variant_id, supply_form, count(*) AS rows
+  FROM v_variant_supply_forms
+ GROUP BY product_variant_id, supply_form;
+
+-- 把配方与套装的源 SKU 全部下架。
+UPDATE supplier_variant SET status = 'inactive'
+ WHERE id IN (
+       SELECT supplier_variant_id FROM supplier_variant_composition WHERE status = 'active'
+       UNION
+       SELECT supplier_variant_id FROM supplier_variant_bundle WHERE status = 'active');
+
+\echo '--- 下架前后形态行数对比（必须一行不少） ---'
+SELECT b.product_variant_id, b.supply_form, b.rows AS before_rows,
+       COALESCE(a.rows, 0) AS after_rows
+  FROM k9_before b
+  LEFT JOIN (SELECT product_variant_id, supply_form, count(*) AS rows
+               FROM v_variant_supply_forms GROUP BY 1, 2) a
+    ON a.product_variant_id = b.product_variant_id
+   AND a.supply_form = b.supply_form
+ WHERE COALESCE(a.rows, 0) <> b.rows
+ ORDER BY b.product_variant_id, b.supply_form;
+
+\echo '--- 下架后的形态行（形态还在，不可售，缺口点名） ---'
+SELECT product_variant_id, variant_code, date, channel_id, supply_form,
+       cost_in_target, can_fulfil, gaps
+  FROM v_variant_supply_forms
+ WHERE supply_form IN ('recipe', 'bundle')
+ ORDER BY product_variant_id, supply_form;
+
+\echo '--- 缺口点名检查（配方 / 套装各 0 行 = 都点名了） ---'
+SELECT (SELECT count(*) FROM v_variant_supply_forms f
+         WHERE f.supply_form = 'recipe'
+           AND NOT ('成分的源 SKU 已下架' = ANY(f.gaps)))   AS recipe_missing_gap,
+       (SELECT count(*) FROM v_variant_supply_forms f
+         WHERE f.supply_form = 'bundle'
+           AND NOT ('套装的源 SKU 已下架' = ANY(f.gaps)))   AS bundle_missing_gap,
+       -- 定价函数不许再给价（少一个成分的套餐不是这个套餐）
+       (SELECT count(*) FROM v_variant_supply_forms f
+         WHERE f.supply_form IN ('recipe', 'bundle')
+           AND EXISTS (SELECT 1 FROM fn_price_variant(f.product_variant_id, f.date,
+                                                       f.channel_id, f.channel_id))) AS still_priced;
+
+ROLLBACK;
+
+\echo ''
 \echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'
 -- 种子数据用了显式 id，identity 序列必须同步推进。
 -- 序列停在 max(id) 之前时，应用第一次 INSERT 就报 duplicate key —— 这是「设计正确但跑不起来」的典型。
