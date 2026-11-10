@@ -14,26 +14,31 @@ import (
 	"ticket-center/internal/fulfillment"
 	"ticket-center/internal/inventory"
 	"ticket-center/internal/order"
+	"ticket-center/internal/reassign"
 	"ticket-center/internal/redemption"
 	"ticket-center/internal/refund"
 	"ticket-center/internal/store"
 )
 
-// cmdOrder 是下单子命令。place 下单，show 查单。
+// cmdOrder 是下单子命令。place 下单，show 查单，reassign 改派，stale 看该改派的明细。
 //
 // 请求走文件（--request）：下单的入参结构本身是领域对象（明细 + 实名 + 联系信息），
 // 摊成一排命令行参数反而更容易拼错。文件格式见 usage。
 func cmdOrder(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("order 需要子命令：place | show")
+		return fmt.Errorf("order 需要子命令：place | show | reassign | stale")
 	}
 	switch args[0] {
 	case "place":
 		return cmdOrderPlace(args[1:])
 	case "show":
 		return cmdOrderShow(args[1:])
+	case "reassign":
+		return cmdOrderReassign(args[1:])
+	case "stale":
+		return cmdOrderStale(args[1:])
 	default:
-		return fmt.Errorf("order 未知子命令：%s（可用：place | show）", args[0])
+		return fmt.Errorf("order 未知子命令：%s（可用：place | show | reassign | stale）", args[0])
 	}
 }
 
@@ -124,6 +129,101 @@ func cmdOrderShow(args []string) error {
 		fmt.Printf("  %s ×%d  单价 %s  小计 %s %s  源商品 %d  访客日 %s  %s\n",
 			it.Title, it.Quantity, it.UnitPrice, it.TotalPrice, it.Currency,
 			it.CostSourceProdID, it.VisitDate, it.PricingBasis)
+	}
+	return nil
+}
+
+// cmdOrderReassign 改派一条明细：重新选源 + 重新定价。
+//
+// 能不能改派、改成什么，全由库里的 fn_reassign_order_item 说了算 ——
+// 这里只把订单号、明细行号和理由送进去。
+func cmdOrderReassign(args []string) error {
+	fs := flag.NewFlagSet("order reassign", flag.ExitOnError)
+	dbName := fs.String("db", "", "目标库（默认取 PGDATABASE，再默认 ticket_center）")
+	orderID := fs.Int64("order", 0, "订单 id")
+	itemID := fs.Int64("item", 0, "明细行 id")
+	reason := fs.String("reason", "", "改派理由（写进留痕）")
+	jsonOut := fs.String("json", "", "结构化结果导出路径")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *orderID == 0 {
+		return fmt.Errorf("order reassign 需要 --order")
+	}
+	if *itemID == 0 {
+		return fmt.Errorf("order reassign 需要 --item")
+	}
+	name := *dbName
+	if name == "" {
+		name = os.Getenv("PGDATABASE")
+	}
+	if name == "" {
+		name = "ticket_center"
+	}
+
+	svc := reassign.New(store.New(name))
+	res, err := svc.Reassign(*orderID, *itemID, *reason)
+	if err != nil {
+		return err
+	}
+	if *jsonOut != "" {
+		if err := writeJSON(*jsonOut, res); err != nil {
+			return err
+		}
+		fmt.Printf("JSON 已导出：%s\n", *jsonOut)
+		return nil
+	}
+	if res.Outcome == "no_change" {
+		fmt.Printf("明细 %d 不用改：当前的源与价已经是对的那个（源商品 %d，单价 %s %s）\n",
+			res.OrderItemID, res.NewSupplierProductID, res.NewUnitPrice, res.Currency)
+		return nil
+	}
+	fmt.Printf("已改派明细 %d：源商品 %d → %d，单价 %s → %s，小计 %s → %s %s\n",
+		res.OrderItemID,
+		res.PreviousSupplierProductID, res.NewSupplierProductID,
+		res.PreviousUnitPrice, res.NewUnitPrice,
+		res.PreviousTotalPrice, res.NewTotalPrice, res.Currency)
+	return nil
+}
+
+// cmdOrderStale 列出待改派的明细：跟当前的世界对不上的那些行。
+func cmdOrderStale(args []string) error {
+	fs := flag.NewFlagSet("order stale", flag.ExitOnError)
+	dbName := fs.String("db", "", "目标库（默认取 PGDATABASE，再默认 ticket_center）")
+	jsonOut := fs.String("json", "", "结构化结果导出路径")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	name := *dbName
+	if name == "" {
+		name = os.Getenv("PGDATABASE")
+	}
+	if name == "" {
+		name = "ticket_center"
+	}
+
+	svc := reassign.New(store.New(name))
+	rows, err := svc.Candidates()
+	if err != nil {
+		return err
+	}
+	if *jsonOut != "" {
+		if err := writeJSON(*jsonOut, rows); err != nil {
+			return err
+		}
+		fmt.Printf("JSON 已导出：%s\n", *jsonOut)
+		return nil
+	}
+	if len(rows) == 0 {
+		fmt.Println("没有待改派的明细")
+		return nil
+	}
+	for _, c := range rows {
+		fmt.Printf("订单 %s（%d）明细 %d · 访客日 %s · 源 %s(%d) → %s(%d) · 单价 %s → %s · %s\n",
+			c.OrderNo, c.OrderID, c.OrderItemID, c.VisitDate,
+			c.CurrentSupplier, c.CurrentSupplierProductID,
+			c.NewSupplier, c.NewSupplierProductID,
+			c.CurrentUnitPrice, c.NewUnitPrice, c.StaleReason)
 	}
 	return nil
 }
@@ -1042,6 +1142,8 @@ func init() {
 
 const usageOrder = `  tc-connect order      place --db name --request req.json [--json out.json]
   tc-connect order      show  --db name --id 7 [--json out.json]
+  tc-connect order      reassign --db name --order 7 --item 3 [--reason "源侧下架"] [--json out.json]
+  tc-connect order      stale --db name [--json out.json]
 `
 
 const usageFulfill = `  tc-connect fulfill    pay      --db name --order 7 --method alipay --amount 1171.60

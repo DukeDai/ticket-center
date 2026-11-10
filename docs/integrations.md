@@ -24,7 +24,7 @@ make check          # 提交前完整自检（vet + test + mock + 演练器）
 ## 包结构
 
 ```
-cmd/tc-connect/              CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant
+cmd/tc-connect/              CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
 cmd/tc-api/                 C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历）
 internal/
   apperr/                    错误四分类 + 缺失凭证 + 端点未确认
@@ -44,6 +44,7 @@ internal/
   readmodel/                 C 端读模型：刷新（口径在库里）与漂移检查 + 组合的售价行/日历格子同步
   transaction/               交易域读侧：状态机的合法流转与领域事件
   order/                     下单：拼参数 / 收结果（不重算金额，不重排源）
+  reassign/                  改派：换源重定价（只调库里的 fn_reassign_order_item，不重排源，不重算钱）
   fulfillment/               履约：支付 / 预订 / 出券（只调库里的函数，不自己算状态）
   refund/                    退款：发起 / 放行 / 完成（只调库里的函数，不自己判资格）
   redemption/                核销：扫票 / 查券（只调库里的函数，不自己判能不能进场、不自己算扣多少额度）
@@ -89,6 +90,10 @@ fixtures/                    真实报文结构的样例（仓库根）
 9. **有效期不在 Go 里算。** 有效期长度住在轴选项上（`product_axis_option.valid_days`），
    唯一读法是库里的 `fn_variant_validity_days()`。Go 侧再写一遍「两天就是 +1 天」，
    就多了一个能悄悄写错的地方 —— 写错的后果是卖了两日票发一天有效期的券。
+10. **改派不在 Go 里算。** 改派走 `024` 里的 `fn_reassign_order_item`，
+    Go 侧只拼参数、只读结果。换源与重新定价都是库里那一份 ——
+    Go 侧再排一次源、再算一次钱，就多了一份「今天该换到哪个源」的说法，
+    而两份说法不一致的后果还是「按 A 源的价格卖、按 B 源出票」。
 
 ---
 
@@ -286,6 +291,27 @@ make order-demo                                       # 端到端演示（自己
     {"variant_id": 18, "item_index": 2, "sequence": 1, "field_code": "holder_name", "value": "王小明"}
   ],
 ```
+
+### `tc-connect order reassign` / `order stale` — 换源与重新定价
+
+```bash
+./bin/tc-connect order stale    --db ticket_center
+./bin/tc-connect order reassign --db ticket_center --order 7 --item 3 --reason "源侧降价了"
+```
+
+`stale` 读 `v_reassign_candidates`：哪些明细跟当前的世界对不上了，
+差在哪（源变了 / 价变了 / 成本变了 / 当天没有可用报价）。
+
+`reassign` 调库里的 `fn_reassign_order_item()`：重新选源 + 重新定价，
+源与价都取自 `fn_price_variant`（它既选源又定价）。
+Go 侧只拼参数、只读结果 —— 换源与算钱都在库里。
+
+改派只发生在**未收款、还没预订过、还是单张形态**的明细上，其余当场报错：
+已收款的订单换源，已成交的金额就失去依据了（这类单走退款流程）；
+配方与套装的源是**声明**的，换源要重新声明，不走改派。
+
+成分行与库存预占跟着源一起走 —— 只改明细就是「按 A 源的价格卖、按 B 源出票」。
+重复改派不会改第二次（返回 `no_change`，留痕不追加）。
 
 ### `tc-connect fulfill` — 支付 → 预订 → 出券
 

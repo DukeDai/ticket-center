@@ -2617,6 +2617,207 @@ BEGIN
     END IF;
 END $$;
 
+-- =====================================================================================
+-- 20. 改派（换源重定价）：下单之后、支付之前，世界变了
+--
+-- 改派是什么：
+--   一条明细在下单之后、支付之前跟当前的世界对不上了 ——
+--   源侧把那个 SKU 下架了、报价变了、或者出现了更便宜的源。
+--   这时明细还钉在原来的源和原来的价上：按旧价卖出去的东西，
+--   要么出不了票，要么按一个已经过期的价卖。
+--
+-- 这一段走一遍完整的改派：
+--   下单 → 另一个源变便宜 → 读侧看见「该改派」→ 改派 → 再改一次（幂等）
+--   → 把源价改回去 → 改派回去（订单回到下单时的样子）。
+--
+-- 口径写在 db/migrations/024_reassign_order_item.sql 的头里：
+--   改派 = 重新选源 + 重新定价（源与价都取自 fn_price_variant）；
+--   只发生在未收款、还没预订过的单张形态上；成分行与库存预占跟着源一起走；
+--   留痕写进明细快照的 reassignments。
+--
+-- 为什么最后要「改派回去」：
+--   种子数据是给演练、给 C 端、给核销演示用的底座 ——
+--   留一笔「跟世界对不上」的订单在那里，后面的演示都得先解释它。
+--   改派回去之后，这笔订单跟下单时一模一样（只是多了一段留痕）。
+-- =====================================================================================
+DO $$
+DECLARE
+    v_variant   BIGINT;
+    v_date      DATE;
+    v_order_id  BIGINT;
+    v_item_id   BIGINT;
+    v_sp        BIGINT;      -- 下单时采纳的源商品
+    v_price     NUMERIC;      -- 下单时的单价
+    v_total     NUMERIC;      -- 下单时的合计
+    v_alt_sv    BIGINT;       -- 另一个源（源变体）
+    v_alt_sp    BIGINT;
+    v_alt_net   NUMERIC;
+    v_alt_sup   NUMERIC;
+    v_new_sp    BIGINT;
+    v_new_price NUMERIC;
+    v_new_total NUMERIC;
+    v_outcome   TEXT;
+    v_stale     TEXT;
+BEGIN
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'SKU-HK-PALACE:adult';
+
+    v_date := current_date + 5;
+
+    -- ---- 下单 ----
+    SELECT o.order_id, o.order_total INTO v_order_id, v_total
+      FROM fn_place_order(
+               1,
+               'idem-c2c-011-reassign',
+               jsonb_build_array(jsonb_build_object(
+                   'variant_id', v_variant, 'quantity', 1, 'visit_date', v_date)),
+               3,
+               jsonb_build_object('name', '改派测试'),
+               NULL,
+               jsonb_build_array(
+                   jsonb_build_object('variant_id', v_variant, 'sequence', 1,
+                                      'field_code', 'holder_name', 'value', '改派测试'),
+                   jsonb_build_object('variant_id', v_variant, 'sequence', 1,
+                                      'field_code', 'id_number',  'value', '110101199005055678'))
+           ) o;
+
+    IF v_order_id IS NULL THEN
+        RAISE EXCEPTION '改派演示：下单失败';
+    END IF;
+
+    SELECT id, supplier_product_id, unit_price INTO v_item_id, v_sp, v_price
+      FROM sales_order_item
+     WHERE order_id = v_order_id;
+
+    IF v_sp IS NULL OR v_price IS NULL THEN
+        RAISE EXCEPTION '改派演示：明细没有落下采纳源或单价';
+    END IF;
+
+    -- ---- 另一个源变便宜 ----
+    --
+    -- 改派换到哪个源不是这里编的：是选源的唯一实现（fn_route_candidates）
+    -- 排出来的第二名。这里只把它的源价改便宜，让它变成第一名。
+    SELECT rc.supplier_variant_id, rc.supplier_product_id, rc.net_price, rc.supplier_price
+      INTO v_alt_sv, v_alt_sp, v_alt_net, v_alt_sup
+      FROM fn_route_candidates(v_variant, v_date, 1, fn_price_row_currency(1)) rc
+     WHERE rc.route_rank = 2;
+
+    IF v_alt_sv IS NULL THEN
+        RAISE EXCEPTION '改派演示：这个变体在 % 没有第二个候选源（改派要有地方可换）', v_date;
+    END IF;
+
+    UPDATE supplier_price_calendar
+       SET net_price      = round(v_alt_net / 2, 2),
+           supplier_price = round(v_alt_sup / 2, 2)
+     WHERE supplier_variant_id = v_alt_sv
+       AND product_variant_id  = v_variant
+       AND date                = v_date;
+
+    -- 源价变了 → 重算售价行 → 刷新 C 端读模型（口径都是库里那一份）。
+    PERFORM fn_reprice_rows();
+    PERFORM fn_refresh_read_models();
+
+    -- ---- 读侧：这条明细已经跟世界对不上了 ----
+    SELECT stale_reason INTO v_stale
+      FROM v_reassign_candidates
+     WHERE order_item_id = v_item_id;
+
+    IF v_stale IS NULL THEN
+        RAISE EXCEPTION '改派演示：明细 % 应该出现在待改派清单里（源价变了，它跟不上了）', v_item_id;
+    END IF;
+
+    -- ---- 改派 ----
+    SELECT r.outcome, r.new_supplier_product_id, r.new_unit_price, r.new_total_price
+      INTO v_outcome, v_new_sp, v_new_price, v_new_total
+      FROM fn_reassign_order_item(v_order_id, v_item_id, '源侧降价了') r;
+
+    IF v_outcome <> 'reassigned' THEN
+        RAISE EXCEPTION '改派演示：改派应该成功，实际 %', v_outcome;
+    END IF;
+
+    IF v_new_sp IS NOT DISTINCT FROM v_sp THEN
+        RAISE EXCEPTION '改派演示：应该换源，实际还是源商品 %', v_sp;
+    END IF;
+
+    IF v_new_price IS NOT DISTINCT FROM v_price THEN
+        RAISE EXCEPTION '改派演示：应该重新定价，实际单价没变（%）', v_price;
+    END IF;
+
+    -- 明细、留痕、订单的钱、成分行、预占，全都跟着新源走。
+    IF (SELECT unit_price FROM sales_order_item WHERE id = v_item_id) <> v_new_price THEN
+        RAISE EXCEPTION '改派演示：明细单价应该是 %', v_new_price;
+    END IF;
+
+    IF (SELECT jsonb_array_length(detail_snapshot -> 'reassignments')
+          FROM sales_order_item WHERE id = v_item_id) <> 1 THEN
+        RAISE EXCEPTION '改派演示：改派一次应该留一条痕';
+    END IF;
+
+    IF (SELECT total FROM sales_order WHERE id = v_order_id) <> v_new_total THEN
+        RAISE EXCEPTION '改派演示：订单合计应该是 %', v_new_total;
+    END IF;
+
+    IF (SELECT supplier_product_id FROM sales_order_item_source
+         WHERE order_item_id = v_item_id) <> v_new_sp THEN
+        RAISE EXCEPTION '改派演示：成分行必须跟着明细换源（履约按成分行建预订）';
+    END IF;
+
+    IF (SELECT supplier_id FROM inventory_hold
+         WHERE order_id = v_order_id) IS DISTINCT FROM
+       (SELECT supplier_id FROM sales_order_item WHERE id = v_item_id) THEN
+        RAISE EXCEPTION '改派演示：库存预占必须跟着明细换源（否则是按旧源占着、新源超卖）';
+    END IF;
+
+    -- ---- 再改一次：幂等 ----
+    SELECT r.outcome INTO v_outcome
+      FROM fn_reassign_order_item(v_order_id, v_item_id, '再改一次') r;
+
+    IF v_outcome <> 'no_change' THEN
+        RAISE EXCEPTION '改派演示：重复改派应该是 no_change，实际 %', v_outcome;
+    END IF;
+
+    IF (SELECT jsonb_array_length(detail_snapshot -> 'reassignments')
+          FROM sales_order_item WHERE id = v_item_id) <> 1 THEN
+        RAISE EXCEPTION '改派演示：重复改派不该再记一笔留痕';
+    END IF;
+
+    -- ---- 把源价改回去，再改派回去 ----
+    --
+    -- 种子数据是底座，不留「跟世界对不上」的订单给别人解释。
+    UPDATE supplier_price_calendar
+       SET net_price      = v_alt_net,
+           supplier_price = v_alt_sup
+     WHERE supplier_variant_id = v_alt_sv
+       AND product_variant_id  = v_variant
+       AND date                = v_date;
+
+    PERFORM fn_reprice_rows();
+    PERFORM fn_refresh_read_models();
+
+    SELECT r.outcome, r.new_supplier_product_id, r.new_unit_price, r.new_total_price
+      INTO v_outcome, v_new_sp, v_new_price, v_new_total
+      FROM fn_reassign_order_item(v_order_id, v_item_id, '源价改回去了') r;
+
+    IF v_outcome <> 'reassigned' THEN
+        RAISE EXCEPTION '改派演示：改派回去应该成功，实际 %', v_outcome;
+    END IF;
+
+    IF v_new_sp IS DISTINCT FROM v_sp
+       OR v_new_price IS DISTINCT FROM v_price
+       OR v_new_total IS DISTINCT FROM v_total THEN
+        RAISE EXCEPTION '改派演示：改派回去应该回到下单时的源与价（原来 源 % 价 % 合计 %；改派后 源 % 价 % 合计 %）',
+          v_sp, v_price, v_total, v_new_sp, v_new_price, v_new_total;
+    END IF;
+
+    -- ---- 门禁：改派走完之后，全库不变量必须仍然全绿 ----
+    IF EXISTS (SELECT 1 FROM v_invariant_checks WHERE NOT passed) THEN
+        RAISE EXCEPTION '改派演示之后不变量必须全绿：%',
+          (SELECT string_agg(check_name || '（' || actual || '）', '；')
+             FROM v_invariant_checks WHERE NOT passed);
+    END IF;
+END $$;
+
 
 COMMIT;
 

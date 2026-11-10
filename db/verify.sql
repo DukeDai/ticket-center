@@ -113,7 +113,7 @@ ORDER BY p.product_code;
 
 \echo ''
 \echo '════════════════════════ E. 不变量断言（全部应 passed=t） ════════════════════════'
--- 断言来源：迁移文件里的 v_invariant_checks 视图（108 条，单一事实来源）
+-- 断言来源：迁移文件里的 v_invariant_checks 视图（112 条，单一事实来源）
 SELECT seq, check_name, expected, actual, passed,
        CASE WHEN passed THEN 'PASS' ELSE 'FAIL' END AS result
 FROM v_invariant_checks
@@ -520,6 +520,51 @@ SELECT (SELECT count(*) FROM v_variant_supply_forms f
                                                        f.channel_id, f.channel_id))) AS still_priced;
 
 ROLLBACK;
+
+\echo ''
+\echo '════════════════════════ K10. 改派：换源与重新定价是一件事（024） ════════════════════'
+-- 改派不是「改一个字段」，是三处事实一起换：明细、履约成分行、库存预占。
+-- 少改一处的后果：
+--   - 不挪成分行 → 按 A 源的价格卖、按 B 源出票；
+--   - 不挪库存预占 → 按新源卖、按旧源占着库存，新源那边多卖一份。
+-- 改派过的明细不许把下单时的定价快照改回去 —— 那张快照记的是「当时报给客户的那个价」。
+--
+-- 这一节是只读的：看种子数据里那笔改派过的订单留下了什么。
+
+\echo '--- 改派留痕（明细快照里的 reassignments） ---'
+SELECT oi.id            AS order_item_id,
+       o.idempotency_key,
+       s->>'reason'                    AS reason,
+       s->>'from_supplier_product_id' AS from_sp,
+       s->>'to_supplier_product_id'   AS to_sp,
+       s->>'from_unit_price'           AS from_price,
+       s->>'to_unit_price'             AS to_price,
+       s->>'currency'                  AS currency
+  FROM sales_order_item oi
+  JOIN sales_order o ON o.id = oi.order_id
+  CROSS JOIN LATERAL jsonb_array_elements(
+          COALESCE(oi.detail_snapshot -> 'reassignments', '[]'::jsonb)) s
+ ORDER BY oi.id, (s->>'at')::timestamptz;
+
+\echo '--- 三处同源（明细 / 成分行 / 库存预占，必须是同一个源） ---'
+SELECT oi.id                     AS order_item_id,
+       oi.supplier_product_id    AS item_sp,
+       src.supplier_product_id   AS source_row_sp,
+       oi.supplier_id            AS item_supplier,
+       h.supplier_id             AS hold_supplier,
+       (oi.supplier_product_id IS NOT DISTINCT FROM src.supplier_product_id) AS item_eq_source_row,
+       (oi.supplier_id        IS NOT DISTINCT FROM h.supplier_id)           AS item_eq_hold
+  FROM sales_order_item oi
+  JOIN sales_order_item_source src ON src.order_item_id = oi.id
+  LEFT JOIN inventory_hold h ON h.order_id = oi.order_id
+ WHERE oi.detail_snapshot ? 'reassignments'
+ ORDER BY oi.id;
+
+\echo '--- 待改派清单（未收款、还没预订过、跟当前世界对不上的明细） ---'
+SELECT order_item_id, current_supplier, new_supplier,
+       current_unit_price, new_unit_price, stale_reason
+  FROM v_reassign_candidates
+ ORDER BY order_item_id;
 
 \echo ''
 \echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'
