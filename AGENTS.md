@@ -314,6 +314,16 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
       不叠「当天没有报价」—— 源还在、只是下架了，报价其实还在。
     - **源侧下架是事实，我们改不了源侧。** 不许为了留住事实去改写历史订单，
       也不许拿「源下架了」当借口把套餐缩小着卖。宁可少卖，不可卖错。
+32. **公开读接口只服务自营 C 端。** C 端读侧是匿名接口（`internal/capi` +
+    `cmd/tc-api`），没有调用方身份，边界只能画在渠道上。
+    - **只服务 `channel_type = 'b2c_own'` 且 `status = 'active'` 的渠道。**
+      `channel` 表里还有 B 端分销、企业客户、供应商直销、内部运营，
+      它们的读模型与自营 C 端在**同一个库里**，价格、币种、税费、结算各是一套 ——
+      换个渠道号就能读到别家的目录与报价，那是跨渠道的数据泄露。
+    - **所有收 `channel_id` 的端点走同一个闸门**（`requireChannel`），
+      不许各自再解析一遍 —— 四个处理器各写一次，漏一个就是一个口子。
+    - **渠道不存在与渠道不对外服务给同一个答复。** 不给调用方一个能枚举
+      渠道的探针。
 
 ## 目录
 
@@ -351,7 +361,7 @@ db/migrations/023_*.sql        可履约源数一个口径（fn_variant_supply_s
 db/seed.sql                   种子数据（7 源 / 7 规范商品 / 29 映射 / 14 场次源绑定 / 10 订单 / 9 读模型卡片 / 21 变体（含 2 张套餐 + 1 张套装）/ 26 源变体 / 6 组合成分行 / 2 套装成分行；售价金额由定价函数生成）
 db/verify.sql                 验收查询（21 组视图 + 108 条不变量断言）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant
-cmd/tc-api/                  C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历；只读读模型）
+cmd/tc-api/                  C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历；只读读模型，只服务在营的自营 C 端渠道）
 internal/
   apperr/                     错误四分类 + 缺失凭证 + 端点未确认
   credential/                 凭证解析（环境变量优先 → supplier.auth_config）
@@ -513,4 +523,5 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] `docs/schema-design.md` 的表清单/索引统计数字同步更新
 - [ ] `docs/ddd.md` 若涉及聚合边界或状态机，同步更新
 - [ ] 改动 C 端展示或购买链路 → `docs/c-end-model.md` 同步更新
+- [ ] 改动公开读接口的渠道口径 → `SPEC.md` §5.18 第三条同步更新，且「只服务在营的自营 C 端、渠道不存在与不对外服务给同一个答复、四个端点共用一个闸门」仍生效
 - [ ] 改动接入层 / 错误分类 / 幂等口径 → `docs/connector-contract.md` §9 与 `docs/integrations.md` 同步更新

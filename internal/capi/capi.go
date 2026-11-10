@@ -17,6 +17,11 @@
 // 但系统里**还没有调用方身份**——没有顾客账号体系，
 // 把下单开成匿名接口等于把订单入口暴露给任何人。
 // 读侧不需要身份，可以先落地。
+//
+// 读侧没有身份可依，边界就画在渠道上：所有收 channel_id 的接口
+// 只服务**在营的自营 C 端**（requireChannel）。B 端分销、企业客户、
+// 供应商直销各有自己的商务口径，读模型也在同一个库里 ——
+// 不拦一道就等于换个渠道号就能读到别家的目录与报价。
 package capi
 
 import (
@@ -85,6 +90,51 @@ func channelID(r *http.Request) (int64, error) {
 		return 0, fmt.Errorf("channel_id 必须是正整数，收到 %q", raw)
 	}
 	return id, nil
+}
+
+// publicChannelType 是公开读接口唯一服务的渠道类型。
+//
+// channel 表里还有 B 端分销、企业客户、供应商直销、内部运营这些类型：
+// 它们的读模型有各自的商务口径（价格、币种、税费、结算），
+// 对外的 C 端接口只服务自营门店 —— 换个渠道号就能读到别家的目录与报价，
+// 那是跨渠道的数据泄露，不是「参数没校验」的小问题。
+const publicChannelType = "b2c_own"
+
+// requireChannel 取必答的渠道维度，并确认它是对外服务的渠道。
+//
+// 匿名接口没有调用方身份，边界只能画在渠道上：只服务**在营的自营 C 端**。
+// 渠道不存在与渠道不对外服务给同一个答复 —— 不给调用方一个能枚举渠道的探针。
+//
+// 每个收 channel_id 的处理器都必须走这里，不许自己再解析一遍。
+func (s *Server) requireChannel(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := channelID(r)
+	if err != nil {
+		badRequest(w, err)
+		return 0, false
+	}
+	ok, err := s.channelIsPublic(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "读渠道失败："+err.Error())
+		return 0, false
+	}
+	if !ok {
+		writeErr(w, http.StatusForbidden, "forbidden",
+			fmt.Sprintf("channel_id=%d 不是对外服务的渠道（这个接口只服务在营的自营 C 端渠道）", id))
+		return 0, false
+	}
+	return id, true
+}
+
+// channelIsPublic 判断这个渠道是不是对外服务的自营 C 端门店。
+func (s *Server) channelIsPublic(id int64) (bool, error) {
+	sql := fmt.Sprintf(
+		"SELECT count(*) FROM channel WHERE id = %d AND channel_type = '%s' AND status = 'active'",
+		id, publicChannelType)
+	n, err := s.db.Scalar(sql)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(n) == "1", nil
 }
 
 // locale 取展示语言。

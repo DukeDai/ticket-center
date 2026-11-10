@@ -2,6 +2,7 @@ package capi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -201,10 +202,25 @@ func TestVariantFeedCarriesDifferenceFacts(t *testing.T) {
 }
 
 func TestCompositionIsScopedByChannel(t *testing.T) {
-	_, h := seeded(t)
+	db, h := seeded(t)
 
-	// 20 号套餐上了两个渠道，两边各有一份成分明细。
-	for _, channel := range []string{"1", "2"} {
+	// 自营的第二个门店：同样是对外服务的自营 C 端。
+	// 但成分明细是按渠道建的 —— 每个门店各有一份，
+	// 不按渠道过滤的话，「2 份成人 + 1 份儿童」被数成两遍。
+	if err := db.Exec(`INSERT INTO channel (id, code, name, channel_type, status) OVERRIDING SYSTEM VALUE
+	                  VALUES (99, 'C2C_2', '自营 C 端二号店', 'b2c_own', 'active');`); err != nil {
+		t.Fatalf("建第二个自营门店失败：%v", err)
+	}
+	if err := db.Exec(`INSERT INTO c_variant_composition (channel_id, product_variant_id, component_variant_id,
+	                                              sequence, quantity, audience_code, valid_days, title)
+	                  SELECT 99, product_variant_id, component_variant_id, sequence, 5.00,
+	                         audience_code, valid_days, title
+	                    FROM c_variant_composition
+	                   WHERE channel_id = 1 AND product_variant_id = 20;`); err != nil {
+		t.Fatalf("铺第二个门店的成分明细失败：%v", err)
+	}
+
+	for _, channel := range []string{"1", "99"} {
 		code, body := get(t, h, "/api/v1/variants/20/composition?channel_id="+channel)
 		if code != http.StatusOK {
 			t.Fatalf("成分清单应返回 200，实际 %d", code)
@@ -222,15 +238,61 @@ func TestCompositionIsScopedByChannel(t *testing.T) {
 		}
 	}
 
-	// 份数是字符串（NUMERIC 不许用浮点）。
-	_, body := get(t, h, "/api/v1/variants/20/composition?channel_id=1")
-	for _, r := range items(t, body) {
-		q, ok := r["quantity"].(string)
-		if !ok {
-			t.Fatalf("份数必须以字符串出：%T", r["quantity"])
+	// 份数是字符串（NUMERIC 不许用浮点），且各渠道各是各的。
+	for _, tc := range []struct{ channel, want string }{{"1", ""}, {"99", "5.00"}} {
+		_, body := get(t, h, "/api/v1/variants/20/composition?channel_id="+tc.channel)
+		for _, r := range items(t, body) {
+			q, ok := r["quantity"].(string)
+			if !ok {
+				t.Fatalf("份数必须以字符串出：%T", r["quantity"])
+			}
+			if tc.want == "" {
+				if q != "1.00" && q != "2.00" {
+					t.Fatalf("渠道 %s 的份数不对：%v", tc.channel, q)
+				}
+				continue
+			}
+			if q != tc.want {
+				t.Fatalf("渠道 %s 的份数应为 %s，实际 %s", tc.channel, tc.want, q)
+			}
 		}
-		if q != "1.00" && q != "2.00" {
-			t.Fatalf("份数不对：%v", q)
+	}
+}
+
+// TestOnlySelfOperatedCEndChannelsAreServed 守住公开读接口的渠道边界。
+//
+// C 端接口是匿名的：没有调用方身份，边界只能画在渠道上。
+// 渠道表里还有 B 端分销、企业客户、供应商直销、内部运营，
+// 它们的读模型与自营 C 端在同一个库里，价格、币种、税费各是一套 ——
+// 换个渠道号就能读到别家的目录与报价，那是跨渠道的数据泄露。
+func TestOnlySelfOperatedCEndChannelsAreServed(t *testing.T) {
+	db, h := seeded(t)
+
+	// 自营门店停用之后也不对外服务（status 不是 active）。
+	if err := db.Exec("UPDATE channel SET status = 'suspended' WHERE id = 1;"); err != nil {
+		t.Fatalf("停用自营门店失败：%v", err)
+	}
+
+	paths := []string{
+		"/api/v1/products?channel_id=%s&locale=zh-CN",
+		"/api/v1/products/6/variants?channel_id=%s",
+		"/api/v1/variants/20/composition?channel_id=%s",
+		"/api/v1/variants/9/calendar?channel_id=%s",
+	}
+	for _, channel := range []string{"2", "3", "999", "1"} {
+		for _, p := range paths {
+			path := fmt.Sprintf(p, channel)
+			code, body := get(t, h, path)
+			if code != http.StatusForbidden {
+				t.Fatalf("%s 不该被公开读接口服务，实际 %d", path, code)
+			}
+			errObj, ok := body["error"].(map[string]any)
+			if !ok || errObj["code"] != "forbidden" {
+				t.Fatalf("%s 的错误体不对：%v", path, body)
+			}
+			if msg, _ := errObj["message"].(string); msg == "" {
+				t.Fatalf("%s 的错误没有说清楚：%v", path, body)
+			}
 		}
 	}
 }

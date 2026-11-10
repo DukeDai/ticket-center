@@ -134,9 +134,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // 城市 / 品类 / 集合点的名字），**下架的卡片不出现在列表里**
 // （status='offline'），售罄的仍在（前端画灰）。
 func (s *Server) handleProducts(w http.ResponseWriter, r *http.Request) {
-	channel, err := channelID(r)
-	if err != nil {
-		badRequest(w, err)
+	channel, ok := s.requireChannel(w, r)
+	if !ok {
 		return
 	}
 	loc, err := locale(r)
@@ -241,9 +240,8 @@ func (s *Server) handleProducts(w http.ResponseWriter, r *http.Request) {
 // 以及组合的构成摘要。事实来自 v_c_variant_feed（读模型），
 // 不在这里 join 主数据重算 —— 重算就是第二份实现。
 func (s *Server) handleVariants(w http.ResponseWriter, r *http.Request) {
-	channel, err := channelID(r)
-	if err != nil {
-		badRequest(w, err)
+	channel, ok := s.requireChannel(w, r)
+	if !ok {
 		return
 	}
 	productID, err := pathID(r, "product_id")
@@ -291,10 +289,10 @@ func (s *Server) handleVariants(w http.ResponseWriter, r *http.Request) {
 //
 // 渠道是必答的：成分明细是按渠道建的，一个套餐上了两个渠道就有两份，
 // 不按渠道过滤会把份数数成两遍（SPEC §5.14）。
+// 渠道还必须是对外服务的自营 C 端（requireChannel）。
 func (s *Server) handleComposition(w http.ResponseWriter, r *http.Request) {
-	channel, err := channelID(r)
-	if err != nil {
-		badRequest(w, err)
+	channel, ok := s.requireChannel(w, r)
+	if !ok {
 		return
 	}
 	variantID, err := pathID(r, "variant_id")
@@ -331,9 +329,8 @@ func (s *Server) handleComposition(w http.ResponseWriter, r *http.Request) {
 //
 // valid_to 由库算好（格子日期 + 有效天数），前端不自己加一天。
 func (s *Server) handleCalendar(w http.ResponseWriter, r *http.Request) {
-	channel, err := channelID(r)
-	if err != nil {
-		badRequest(w, err)
+	channel, ok := s.requireChannel(w, r)
+	if !ok {
 		return
 	}
 	variantID, err := pathID(r, "variant_id")
