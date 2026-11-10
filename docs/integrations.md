@@ -25,6 +25,7 @@ make check          # 提交前完整自检（vet + test + mock + 演练器）
 
 ```
 cmd/tc-connect/              CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant
+cmd/tc-api/                 C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历）
 internal/
   apperr/                    错误四分类 + 缺失凭证 + 端点未确认
   credential/                凭证解析（环境变量优先 → supplier.auth_config）
@@ -50,6 +51,7 @@ internal/
   variant/                   异构差异读侧：对照表 / 源覆盖缺口 / C 端读视图 + 组合构成（只读视图，不重算有效天数与覆盖判定）
   compose/                   组合映射写侧：组合表达式 → 配方（核组件、核数量；覆盖判定走库里的 fn_variant_covered）
   mock/                      Trip.com 分销侧协议 mock（标准库 net/http）
+  capi/                      C 端只读 API：路由 / 参数校验 / 读模型查询（不 join 主数据、不重算事实）
   idgen/                     请求级 UUID（追踪位，**不是**幂等键）
 configs/                     api_config.json / mapping_rules.json（仓库根）
 fixtures/                    真实报文结构的样例（仓库根）

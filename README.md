@@ -82,6 +82,16 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 生成前端
 open scripts/poc/index.html        # macOS
 ```
 
+**C 端只读 API** —— 只读读模型，不 join 主数据：
+
+```bash
+make api                                     # 起服务（默认 :8080）
+curl -s "http://127.0.0.1:8080/api/v1/products?channel_id=1&locale=zh-CN"
+```
+
+浏览卡片 / 变体差异 / 套餐构成 / 日历四个读侧端点。
+写侧（购物车 / 结算 / 下单 / 支付）还没开 —— 系统里还没有调用方身份。
+
 **接入层（Go）** —— 拿不到凭证也能跑 L0 连通性与离线自检：
 
 ```bash
@@ -400,6 +410,7 @@ make order-demo                                       # 端到端演示：找有
 | [`db/migrations/`](db/migrations/) | 全部 DDL：冻结的建库基线 + 后续迁移文件（`tc-connect migrate` 应用） |
 | [`db/seed.sql`](db/seed.sql) | 种子数据 |
 | [`db/verify.sql`](db/verify.sql) | 验收查询 + 不变量断言 |
+| [`cmd/tc-api/`](cmd/tc-api/) | **C 端只读 API 服务**：浏览 / 变体差异 / 套餐构成 / 日历 |
 | [`cmd/tc-connect/`](cmd/tc-connect/) | **接入层 CLI**：`sources` / `layers` / `mock` / `normalize` / `compose` / `price` / `migrate` / `refresh` / `order` / `fulfill` / `refund` / `redeem` / `stock` / `hold` / `variant` |
 | [`internal/`](internal/) | **接入层实现**：传输层 / 凭证 / 归一化 / 各源适配器 / 归档幂等 / 定价读侧 / 迁移引擎 / 读模型刷新 / 状态机读侧 / 下单 / 履约 / 退款 / 核销 / 库存 / 组合映射 / mock |
 | [`configs/`](configs/) | 传输层配置（端点 / ICODE / 凭证口径 / 错误码）+ 映射规则（单一真相） |
@@ -423,5 +434,5 @@ make order-demo                                       # 端到端演示：找有
 - [ ] **组合进 C 端读模型**：组合没有 `price_calendar` 行，读模型画不出它；组合的有效期终点与人群标签口径还没定（`SPEC.md` §5.13 的已知缺口）
 - [ ] 接入层之上的**业务编排作业**（同步调度 / 改派 / 自动补报 / 退款重试）
 - [ ] B 端管理台：商品/上架/路由/映射审核/异常单
-- [ ] C 端链路：搜索 → 详情 → 选场次 → 下单 → ~~出券 → 核销~~（出券与核销的写路径都已落地，剩下的是 C 端界面与购买链路）
+- [ ] C 端链路：搜索 → 详情 → 选场次 → 下单 → ~~出券 → 核销~~（出券与核销的写路径都已落地；**读侧已开成 HTTP 接口** —— `cmd/tc-api` 的浏览 / 变体差异 / 套餐构成 / 日历四个端点；剩下的是搜索、详情界面与购买链路的写侧，还差调用方身份与鉴权）
 - [ ] 订单表分区、只读副本、源报文冷热分离（方案见 `docs/schema-design.md` §9）

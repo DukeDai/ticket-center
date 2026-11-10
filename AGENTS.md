@@ -350,6 +350,7 @@ db/migrations/022_*.sql        供给形态不许因为源 SKU 下架而缩小�
 db/seed.sql                   种子数据（7 源 / 7 规范商品 / 29 映射 / 14 场次源绑定 / 10 订单 / 9 读模型卡片 / 21 变体（含 2 张套餐 + 1 张套装）/ 26 源变体 / 6 组合成分行 / 2 套装成分行；售价金额由定价函数生成）
 db/verify.sql                 验收查询（21 组视图 + 107 条不变量断言）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant
+cmd/tc-api/                  C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历；只读读模型）
 internal/
   apperr/                     错误四分类 + 缺失凭证 + 端点未确认
   credential/                 凭证解析（环境变量优先 → supplier.auth_config）
@@ -372,6 +373,7 @@ internal/
   redemption/                 核销：扫票 / 查券（只调库里的函数，不自己判能不能进场、不自己算扣多少额度）
   inventory/                  库存：查可售 / 预占 / 放掉（只调库里的函数，不自己算可售数、不自己判够不够）
   variant/                    异构差异读侧：对照表 / 源覆盖缺口 / C 端读视图 / 套装构成 / 三种供给形态对照（只读视图，不重算有效天数、覆盖判定、成本与份数）
+  capi/                       C 端只读 API：路由 / 参数校验 / 读模型查询（不 join 主数据、不重算事实）
   coverage/                   覆盖语义读侧：源变体覆盖住哪些可售单元（判定走库里的 fn_variant_covered）
   compose/                    组合映射写侧：组合表达式 → 配方（核组件、核数量；覆盖判定走库里的 fn_variant_covered）
   mock/                       Trip.com 分销侧协议 mock（标准库 net/http）
@@ -404,6 +406,20 @@ psql -h 127.0.0.1 -d ticket_center -v ON_ERROR_STOP=1 -f db/seed.sql
 # 验收（必须全绿）
 psql -h 127.0.0.1 -d ticket_center -v ON_ERROR_STOP=1 -f db/verify.sql
 ```
+
+C 端只读 API（只读读模型，不 join 主数据；写侧还没开 —— 没有调用方身份）：
+
+```bash
+make api                                     # 起服务（默认 :8080，库 ticket_center）
+./bin/tc-api --db ticket_center --addr :8080 # 或直接起
+
+curl -s "http://127.0.0.1:8080/api/v1/products?channel_id=1&locale=zh-CN"
+curl -s "http://127.0.0.1:8080/api/v1/products/6/variants?channel_id=1"
+curl -s "http://127.0.0.1:8080/api/v1/variants/19/composition?channel_id=1"
+curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
+```
+
+渠道（`channel_id`）是必答的：C 端读模型按渠道建，不按渠道过滤会把份数数成两遍。
 
 无凭证集成演练（拿不到源的 key/id/token 时，先用真实报文结构验证 mapping → 路由；
 建独立演练库 ticket_center_dryrun，不动主库）。归一化由 Go 实现提供，

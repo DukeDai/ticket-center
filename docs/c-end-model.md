@@ -328,7 +328,7 @@ C 端要展示套餐，「里面有什么、各几个」这条事实住在组合
 | 组合行 | `v_c_variant_feed` | 组合变体与普通变体一样出现在变体行里，另带 `is_combo` / `combo_audience` / `component_count` / `composition` |
 | 组件清单 | `v_c_variant_composition` | C 端的成分明细：一行一个成分（份数 / 人群编码 / 各管几天） |
 | 配方对照 | `v_variant_composition` | 组合 / 组件 / 源 SKU / 源侧数量 vs 声明数量（B 端对账用） |
-| 差异对照 | `v_variant_comparison` | 组合与普通变体的差异（人群取并集、轴取值取并集） |
+| 差异对照 | `v_variant_comparison` | 组合与普通变体的差异（人群取并集放在 `combo_audience`；**组合自身的轴取值是空的** —— 组合的身份由成分决定，成分的轴取值在成分那一行上） |
 
 **写路径已经接上组合了**（`SPEC.md` §5.13）：定价（成本 = Σ 成分单价 × 数量）、
 预订（按配方带整组源 SKU）、出券（一个成分发该成分应发的张数）、
@@ -444,6 +444,30 @@ tc-connect refresh --check      # 只查漂移（刷新作业漏跑时非零退�
 
 前端的义务只有一条：**折扣为 0 时不显示划线价**。
 
+### 3.1 读侧的 HTTP 通路（2026-11-10 落地）
+
+上面这条链路的读侧现在有 HTTP 接口了：`internal/capi` + `cmd/tc-api`（见 `SPEC.md` §5.18）。
+
+```
+GET /healthz
+GET /api/v1/products?channel_id=&locale=&limit=&offset=          ① 浏览
+GET /api/v1/products/{product_id}/variants?channel_id=            ③ 选变体（差异事实）
+GET /api/v1/variants/{variant_id}/composition?channel_id=          ③ 套餐由谁组成
+GET /api/v1/variants/{variant_id}/calendar?channel_id=&from=&to=   ④ 看日历
+```
+
+三条口径：
+
+- **只读读模型。** 端点打在 `c_product_card` / `v_c_listing_feed` / `v_c_variant_feed` /
+  `v_c_variant_composition` / `c_variant_calendar` 上，不 join 主数据，也不重算事实 ——
+  有效天数、成分份数、可履约源数都是库里算好的。
+- **渠道必答。** 读模型是按渠道建的：`channel_id` 不给就报错，
+  不给「全部渠道」这个默认值 —— 不按渠道过滤，份数会被数成两遍。
+- **金额以字符串出。** Go 没有十进制类型，`2470.80` 不许变成 `2470.7999999999997`。
+
+**写侧还没开**：下单 / 支付 / 出券各有唯一实现，但系统里**还没有调用方身份**，
+把下单开成匿名 HTTP 接口等于把订单入口暴露给任何人。读侧不需要身份，先落地。
+
 ---
 
 ## 4. 刻意没做的部分
@@ -456,6 +480,7 @@ tc-connect refresh --check      # 只查漂移（刷新作业漏跑时非零退�
 | 拼团 / 秒杀 / 分销裂变 | 独立玩法，独立上下文 | 做活动时 |
 | 优惠券自动匹配引擎 | 现在是"用户选券"，不是"系统最优券" | 做转化优化时 |
 | 多币种展示 | 卡片带 `currency` 字段，但展示层换算策略未定 | C 端出海时 |
+| C 端购买链路的**写侧**（购物车 / 结算 / 下单 / 支付的 HTTP 接口） | 口径都在库里（`fn_place_order` / `fn_record_payment` / `fn_issue_voucher`），但系统里**还没有调用方身份**：没有顾客账号体系，匿名下单接口等于把订单入口暴露给任何人 | 鉴权那一层落地之后 |
 
 ---
 

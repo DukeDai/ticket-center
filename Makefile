@@ -12,6 +12,7 @@
 #   make dbstatus  看迁移状态
 #   make refresh   刷新 C 端读模型并查漂移
 #   make order-demo 下单链路端到端演示（找有售价的日期 → 下单 → 幂等重放 → 查单）
+#   make api       起 C 端只读 API（只读读模型）
 #   make poc       生成前端 POC 页面
 
 SHELL := /bin/bash
@@ -20,17 +21,20 @@ PSQL ?= psql
 PGHOST ?= 127.0.0.1
 PGDATABASE ?= ticket_center
 BIN := bin/tc-connect
+API := bin/tc-api
+API_ADDR ?= :8080
 
 export PATH := /usr/local/go/bin:$(PATH)
 
-.PHONY: all build test vet fmt check mock layers dryrun poc db verify sources clean migrate dbstatus dbcheck refresh order-demo
+.PHONY: all build test vet fmt check mock layers dryrun poc db verify sources clean migrate dbstatus dbcheck refresh order-demo api
 
 all: build
 
 build:
 	@mkdir -p bin
 	$(GO) build -o $(BIN) ./cmd/tc-connect
-	@echo "已构建 $(BIN)"
+	$(GO) build -o $(API) ./cmd/tc-api
+	@echo "已构建 $(BIN) $(API)"
 
 test:
 	$(GO) test ./... -timeout 120s
@@ -91,6 +95,10 @@ refresh: build
 # 下单链路端到端演示：脚本自己找有售价的日期，不写死日期
 order-demo: build
 	python3 scripts/order_demo.py --db $(PGDATABASE)
+
+# 起 C 端只读 API（只读读模型，不 join 主数据）
+api: build
+	./$(API) --db $(PGDATABASE) --addr $(API_ADDR)
 
 # 重建主库（会清库）并跑验收
 db: build
