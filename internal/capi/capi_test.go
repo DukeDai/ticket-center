@@ -265,6 +265,38 @@ func TestCalendarCarriesLibraryComputedValidTo(t *testing.T) {
 	}
 }
 
+func TestCalendarReportsRealSourceCountForCombos(t *testing.T) {
+	_, h := seeded(t)
+
+	// 配方套餐（19 号：2 份成人 + 1 份儿童，由同一个源拼出来）与
+	// 套装（21 号：源侧把整套当一个 SKU 卖）的可履约源数都应该是 1。
+	//
+	// 曾经这一列是 0：刷新作业的 source_count 只在单张形态上算得对，
+	// 而配方与套装按设计没有源映射。0 的意思是「一个源都供不了」——
+	// 一个在卖的套餐被说成没有供给，前端就该按没有供给处理。
+	for _, tc := range []struct {
+		variantID string
+		why       string
+	}{
+		{"19", "配方套餐"},
+		{"21", "套装"},
+	} {
+		code, body := get(t, h, "/api/v1/variants/"+tc.variantID+"/calendar?channel_id=1")
+		if code != http.StatusOK {
+			t.Fatalf("%s 的日历应返回 200，实际 %d", tc.why, code)
+		}
+		rows := items(t, body)
+		if len(rows) == 0 {
+			t.Fatalf("%s 的日历不该是空的", tc.why)
+		}
+		for _, r := range rows {
+			if r["source_count"].(float64) != 1 {
+				t.Fatalf("%s 的可履约源数应为 1，实际 %v", tc.why, r["source_count"])
+			}
+		}
+	}
+}
+
 func TestCalendarRejectsBadRange(t *testing.T) {
 	_, h := seeded(t)
 

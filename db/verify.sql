@@ -113,7 +113,7 @@ ORDER BY p.product_code;
 
 \echo ''
 \echo '════════════════════════ E. 不变量断言（全部应 passed=t） ════════════════════════'
--- 断言来源：迁移文件里的 v_invariant_checks 视图（92 条，单一事实来源）
+-- 断言来源：迁移文件里的 v_invariant_checks 视图（108 条，单一事实来源）
 SELECT seq, check_name, expected, actual, passed,
        CASE WHEN passed THEN 'PASS' ELSE 'FAIL' END AS result
 FROM v_invariant_checks
