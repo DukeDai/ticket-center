@@ -2,8 +2,8 @@
 
 > 物理模型：`db/migrations/`（PostgreSQL 15+；基线 `001_baseline.sql` + 后续迁移文件）
 > 建库：`tc-connect migrate --db <库>`（迁移引擎：账本 + 内容校验和 + 幂等 + 并发互斥）
-> 验收：`db/verify.sql`（112 条不变量断言 + 21 组业务视图）
-> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 58 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列。
+> 验收：`db/verify.sql`（不变量断言 + 46 组业务视图；条数跑 `make counts`）
+> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 61 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列 / 129 个函数（条数跑 `make counts`，以库里的实际口径为准）。
 
 ---
 
@@ -110,9 +110,11 @@ product_mapping(supplier_product_id, supplier_id, product_id,
 `product_session`（规范场次）+ `product_session_source`（可供给源）把冗余下沉到场次：
 
 ```
-香港故宫 2026-11-05 → globaltix(primary,10) / jtb(fallback,20) / 票付通(fallback,30)
-香港故宫 2026-11-06 → globaltix(primary,10) / jtb(fallback,20) / 票付通(fallback,30)
+香港故宫 <日期> → globaltix(primary,10) / jtb(fallback,20) / 票付通(fallback,30)
+香港故宫 <日期+1> → globaltix(primary,10) / jtb(fallback,20) / 票付通(fallback,30)
 ```
+
+（种子的场次日期是 `current_date + N`，换库重灌后日期会平移；现查：`tc-connect variant feed --db <库> --channel 1`）
 
 ### 3.3 机制三：成本归一（可比）
 
@@ -126,7 +128,7 @@ product_mapping(supplier_product_id, supplier_id, product_id,
    （实测中这个方向一开始写反了，被验收查询当场抓出来：2600 JPY 被算成 54990 CNY。）
 3. **归一视图**：`v_source_routing_candidates` 用 `ROW_NUMBER()` 按 `cost_base` 排序出 `route_rank`。
 
-实测路由结果（C2C / 香港故宫 / 成人票 / 2026-11-05）：
+实测路由结果（C2C / 香港故宫 / 成人票 / <日期>；日期现查：`tc-connect variant feed --db <库> --channel 1`）：
 
 | rank | 源 | 原币 | 折算 CNY | mode |
 |---|---|---|---|---|
@@ -182,7 +184,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 
 ---
 
-## 4. 表清单（74 张）
+## 4. 表清单（77 张业务表 + 1 张迁移账本 `ops.schema_migration`）
 
 ### 4.1 集成域（3）
 `supplier` · `supplier_raw_payload` · `sync_job_log`
@@ -214,7 +216,28 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 ### 4.10 运维（3）
 `event_outbox` · `notification_outbox` · `app_setting`
 
-### 4.11 视图（58）
+### 4.11 变体域（8）
+`product_variant` · `product_variant_option` · `product_variant_relation` · `product_axis` · `product_axis_option` · `product_tag_link` · `tag` · `product_location`
+
+### 4.12 展示内容域（4）
+`product_highlight` · `product_inclusion` · `product_note` · `product_review`
+
+### 4.13 异构融合域（5）
+`supplier_variant` · `supplier_variant_mapping` · `supplier_variant_composition` · `supplier_variant_bundle` · `supplier_variant_bundle_part`
+
+### 4.14 读模型域（C 端，5）
+`c_product_card` · `c_product_calendar` · `c_variant_calendar` · `c_variant_facts` · `c_variant_composition`
+
+### 4.15 库存与持票人域（2）
+`inventory_hold` · `order_holder`
+
+### 4.16 结算前置域（4）
+`checkout_requirement` · `gate` · `gate_operator` · `coupon`
+
+### 4.17 营销域（3）
+`cart` · `cart_item` · `coupon_redemption`
+
+### 4.18 视图（61）
 
 | 视图 | 回答什么问题 |
 |---|---|
@@ -229,7 +252,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 112 条业务不变量有没有被破坏？（= core 45 条 + tx 8 条 + order 1 条 + fulfill 6 条 + refund 4 条 + redemption 4 条 + inventory 4 条 + validity 3 条 + readmodel 6 条 + composition 4 条 + combo 7 条 + hardening 2 条 + bundle 5 条 + bundle 库存侧 2 条 + 供给形态对照侧 3 条 + 供给形态不许缩小侧 3 条 + 可履约源数侧 1 条 + 改派侧 4 条） |
+| `v_invariant_checks` | 全部业务不变量有没有被破坏？（各主题视图的并集；分组与条数见 SPEC.md §4，条数跑 `make counts`） |
 | `v_invariant_checks_core` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
@@ -241,7 +264,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_invariant_checks_readmodel` | 读模型侧 6 条有没有被破坏？（读模型不与主数据分叉、日历有效期终点不被算错、组合的有效期 = 成分窗口的并集、组合构成不与主数据分叉、组合的格子带价格） |
 | `v_invariant_checks_composition` | 组合映射侧 4 条有没有被破坏？（成分同源、成分覆盖得住、两侧数量一致、组合不许直接挂源映射） |
 | `v_invariant_checks_combo` | 组合售卖侧 7 条有没有被破坏？（成分属于本明细的商品、明细成本 = Σ 成分单价 × 数量、出票张数 = 配方数量 × 份数、成分同源且与明细一致、成分票额够用、同一源 SKU 只订一次、预订与成分双向对齐） |
-| `v_invariant_checks_supply` | 供给/定价/展示侧不变量视图的**供给侧**子集（45 条里去掉 29，剩 44 条） |
+| `v_invariant_checks_supply` | 供给/定价/展示侧不变量视图的**供给侧**子集（当前与 `v_invariant_checks_core` 同集，45 条） |
 | `v_c_listing_feed` | C 端列表页直出（一行一卡片，无额外 join） |
 | `v_c_product_detail` | C 端详情页内容一次聚合 |
 | `v_c_checkout_requirements` | 结算页动态表单规格 |
@@ -265,6 +288,9 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_reassign_candidates` | 哪些明细跟当前的世界对不上了、该改派？（源变了 / 价变了 / 成本变了 / 当天没有可用报价） |
 | `v_invariant_checks_reassign` | 改派侧 4 条有没有被破坏？（留痕的最后一跳等于明细当前值 / 留痕的链自洽 / 已收款不许改派 / 成分行与明细同源） |
 | `v_invariant_checks_order_004` | 下单侧不变量旧版留底（024 修订了 54：改派过的行由改派留痕解释） |
+| `v_invariant_checks_qty_limits` | 份数区间侧 3 条有没有被破坏？（留痕的份数落在留痕的区间内 / 区间留痕指向明细的采纳源 / 改派过的明细记着当前采纳源的区间） |
+| `v_invariant_checks_reassign_basis` | 按团单位价口径侧 3 条有没有被破坏？（按团明细的单位价 = 团总价分摊到人 / 单位成本 = 团成本分摊到人 / 待改派清单说「成本变了」的按团明细按人均口径算也真的变了） |
+| `v_invariant_checks_hold_ttl` | 预占到期时间侧 1 条有没有被破坏？（落库的预占必须有确定的到期时间 —— NULL 的预占永远不过期，是个不会释放的库存占用） |
 | `v_invariant_checks_core_017` | 供给侧 45 条里 34 与 43 按套装口径修订后的那一版 |
 | `v_invariant_checks_inventory_017` | 库存预占侧 4 条里 69 与 72 按套装口径修订后的那一版 |
 | `v_invariant_checks_validity_017` | 有效期侧 3 条里 75 按套装口径修订后的那一版 |
@@ -527,7 +553,7 @@ CONSTRAINT coupon_usage_ck       CHECK (used_count >= 0 AND (usage_limit IS NULL
 
 ## 8. 索引与触发器清单（实测）
 
-- 表 77 / 视图 55 / 索引 227 / 触发器 39 / CHECK 约束 99 / 序列 67
+- 表 77（+1 张迁移账本 `ops.schema_migration`）/ 视图 61 / 索引 227 / 触发器 39 / CHECK 约束 99 / 序列 67 / 函数 129（条数跑 `make counts`）
 - `updated_at` 由统一触发器 `fn_set_updated_at()` 维护，避免应用层漏更新
 - 交易侧状态机由 12 个触发器守着（4 张表 × 守卫 + 事件）：非法流转当场报错，状态一变就落一条领域事件
 - 订单关上（`cancelled` / `expired` / `refunded`）时由 `trg_release_holds_on_order_close` 把它的库存预占置为 `voided`：承诺要放掉，但「卖出过」这个事实不许被改写
@@ -638,6 +664,9 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `022_supply_form_shrink_guard.sql` | `fn_combo_components()` / `fn_bundle_components()` 整体替换（成分行不因源 SKU 下架而消失：源的可用性从「决定这一行在不在」改成「决定这一行有没有价」）+ `v_variant_supply_forms` 整体替换（形态行留着，缺口点名「源 SKU 已下架」，残缺套餐不许报成本）+ `v_invariant_checks_supply_form_shrink_022` + `v_invariant_checks` 重建（不变量 105-107 新增） | 成分解析时写的是 `JOIN supplier_variant ... AND status = 'active'`：源侧把某个 SKU 下架时，那一行直接消失。配方于是静悄悄地变成了一个更小的套餐 —— 少一个成分就按剩下的成分重新定价（收 3 份入场的钱，出 1 份票），C 端构成读模型还写着 2 个成分 / 3 份入场，读侧与写侧分叉；套装的形态行则整个从对照视图里消失 —— 不是「卖不掉」，是「看不见」。源下架是事实，改不了源侧，但缺一个成分的套餐不是这个套餐（见 §28） |
 | `023_supply_source_count.sql` | `fn_variant_supply_source_count()` 新增（几个源能供这个可售单元：单张按路由选出的源、配方按成分的源 SKU、套装按整套那个 SKU）+ `fn_refresh_read_models()` / `fn_sync_combo_calendar()` 整体替换（日历格子的 `source_count` 改走这个函数）+ `v_invariant_checks_supply_source_count_023` + `v_invariant_checks` 重建（不变量 108 新增） | 日历的 `source_count` 原本只在单张形态上算得对：刷新作业数的是「源映射 × 当天的源侧报价」的行数，而配方与套装按设计没有源映射（不变量 81），于是它们的格子一律是 0。0 的意思是「一个源都供不了」，而这些组合在对照视图里明明 `can_fulfil = true`、`supplier_count = 1`、售价也摆着 —— C 端读到的是一个在卖的套餐被说成没有供给。取舍写在这里：**源数不是成分数**（2 份成人 + 1 份儿童是 3 个成分、1 个源）、**不是价格行数**；单张按路由算（选源与定价同源）；日历的 `source_count`（这一天能供几个）与对照视图的 `supplier_count`（这个形态由哪几个源组成，源下架了也还数着）是两件事，不混 |
 | `024_reassign_order_item.sql` | `fn_reassign_order_item()` 新增（改派的唯一实现：重新选源 + 重新定价，源与价都取自 `fn_price_variant`）+ `v_reassign_candidates` 视图（哪些明细跟当前世界对不上、差在哪）+ `v_invariant_checks_reassign` + `v_invariant_checks_order_004` 留底 + `v_invariant_checks` 重建（不变量 109-112 新增，54 修订） | 一条明细在下单之后、支付之前跟当前的世界对不上了：源侧下架、报价变了、出现了更便宜的源，明细还钉在原来的源和原来的价上 —— 按旧价卖出去的东西要么出不了票，要么按一个已经过期的价卖。取舍写在这里：**改派 = 重新选源 + 重新定价**（源与价都取自定价函数的唯一实现）；**只发生在未收款未预订的单张形态上**；**成分行与库存预占跟着源走** —— 只改明细就是「按 A 源的价格卖、按 B 源出票」「按新源卖、按旧源占库存」；**留痕写进明细快照**，下单时的定价快照保持冻结 |
+| `025_source_quantity_limits.sql` | `fn_source_quantity_limits()` 新增（源价行上 `min_qty` / `max_qty` 的唯一读法，键是「源变体 × 规范变体 × 日期」，与选源同一把键）+ `fn_qty_servable()` 新增（接不接得住这个份数的唯一判定）+ `fn_place_order()` / `fn_reassign_order_item()` 各整体替换一次（落单与改派都守这条）+ `v_invariant_checks_qty_limits` + `v_invariant_checks` 重建（不变量 113-115 新增） | 源价行上的「最少 6 人成团 / 单笔上限 40 份」这一对整数以前全库没有一处读它 —— 客户买 1 张按团价的票，系统按整团价收了 1200，源侧因为不足 6 人直接拒单：钱收了、票出不来。取舍写在这里：**区间是源侧的一手事实，唯一读法是一个函数**；**份数的单位 = 源侧的售卖单位**（单张按人 = 份、按团 = 人、套装 = 套、配方 = 该源 SKU 的份数）—— 按团报价的团总价只在人数达标时成立；**同一个源 SKU 顶多个成分时比这个 SKU 的总份数**（参数化源里成人与儿童是同一个 SKU，源侧收到的是一条预订里的总份数，按成分各判各的会漏掉「合起来超上限」）；**不按份数换源**（换了源就是另一个价，而售价行没有份数维度 —— 要按份数换源得给价格加阶梯，是另一个增量）；**改派也守这条**（新源接不住就不改派）；**区间记进明细快照**（源侧后来改了他的成团人数，我们这边记的是当时那一版） |
+| `026_reassign_candidates_cost_basis.sql` | `fn_unit_amount()` 新增（总价 → 单位价的唯一实现：按团报价按人分摊并保留两位小数，按人计价原样返回）+ `fn_place_order()` / `fn_reassign_order_item()` 各整体替换一次（写路径不再自己写一遍 CASE）+ `v_reassign_candidates` 整体替换一次（成本与价格的比较改走同一口径）+ `v_invariant_checks_reassign_basis` + `v_invariant_checks` 重建（不变量 116-118 新增） | 按团报价的源价行给的是团总价 / 团成本（整团 1200 / 1100），明细里记的单位价与单位成本是分摊到人的（171.43 / 157.14）。待改派清单比售价时做了分摊、比成本时却直接拿团成本和人均成本比 —— 1100 ≠ 157.14，于是每一条按团报价的未收款明细都被说成「成本变了」；写路径的分摊一直是对的，真去改派函数自己返回 `no_change`：**清单说的与写路径做的不一样，清单就不可信**。取舍写在这里：**总价 → 单位价只有一个实现**（写路径与读路径都调 `fn_unit_amount`，不各写一遍 CASE）；**按团的人均只是分摊，不是价**（团总价与人数不成正比，人均那一份不许拿去和按人计价的单价比）；**明细里记的是分摊后的数**，团总价与团成本留在快照里（`detail_snapshot->'group_total'` / `->'cost_price'`），对账时看的是当时的团价不是今天的；**清单与写路径必须同口径**（清单说「成本变了」，按人均口径算也必须真的变了） |
+| `027_hold_ttl_default.sql` | `fn_hold_inventory()` 整体替换一次（函数开头把 `p_ttl_seconds` 归一：`COALESCE(p_ttl_seconds, 900)`；哈希与 `expires_at` 都用归一后的值）+ `v_invariant_checks_hold_ttl` + `v_invariant_checks` 重建（不变量 119 新增） | `tc-connect hold create` 不带 `--ttl`（README 自己给的示例命令）**跑不通**：`null value in column "request_hash" ... violates not-null constraint`。根因是 PostgreSQL 的 `DEFAULT` 只在**省略实参**时生效，显式传 `NULL` 拿到的是 `NULL` —— Go 侧把「没指定」编码成 `NULL`，`NULL` 顺着哈希链把 `idempotency_record.request_hash` 撑成 `NULL`。取舍写在这里：**默认值住在库里，不住在调用方**（任何调用方省略 TTL 或传 `NULL`，拿到的都是同一个 900；默认值写在调用方 = 每多一个调用方就多一份默认值，三处总有一处忘了改）；**`DEFAULT` 不是归一**（凡是「参数可以不给」的函数，归一都得在函数体里显式写）；**幂等口径不变**，但不指定与指定 900 现在落同一张预占（同一个 hash），同键异内容仍当场报错 |
 
 读模型刷新写成一个 SQL 函数而不是散在调用方里，是有代价换来的：
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
@@ -768,17 +797,17 @@ CREATE VIEW v_invariant_checks AS
 - 内容漂移会被拦：改动已应用的迁移文件 → 引擎拒绝继续跑
 - 存量库接管：`--baseline 001` 记账不执行，后续迁移照常应用
 - 并发：两个迁移进程同时跑，会话级互斥锁把它们串行化
-- `db/seed.sql` 完整装载（7 源 / 11 源商品 / 7 规范商品 / 11 映射 / 13 场次源绑定 / 6 订单 / 7 明细 / 6 预订 / 7 凭证 / 2 结算单 / 9 读模型卡片 / 11 日历格子 / 4 优惠券 / 4 购物车 / 4 库存预占 / 11 结算规格 / 10 持票人 / 6 评价 / 19 变体（含 2 张套餐）/ 25 源变体 / 29 覆盖映射 / 4 组合成分行）
+- `db/seed.sql` 完整装载（各表行数见 `make counts` 的「种子行数」段）
 - `db/verify.sql` 全部视图正常输出
-- `v_invariant_checks` 112 条断言 **112/112 PASS**
+- `v_invariant_checks` 全部断言 **全 PASS**（条数跑 `make counts`）
 - 状态机机制实测：非法流转（`expired → confirmed`）当场报错且数据未变；
   合法流转（`failed → pending`）写进去了，并在 `event_outbox` 留下 `BookingRetryScheduled`
 - C 端读模型漂移检测：9 张卡片全部 `drifted=f`（`drifted=true` 计数 0）
 - 变体级路由：环球影城 8 个变体 14 条候选，**同一商品不同变体首选源不同**
 - 覆盖语义：儿童园区通票只有 Zowoyoo 一个候选；商品级路由视图对该商品输出 **0 行**
-- 定价：23 行在售售价行全部由 `fn_price_variant` 生成，锁价行售价 = 源方挂牌价（498.00），
+- 定价：27 行在售售价行全部由 `fn_price_variant` 生成，锁价行售价 = 源方挂牌价（498.00），
   按团报价行售价 = 团总价（1200.00），毛利率全部达标
-- 选源与定价同源：23 行售价行的采纳源与 `fn_route_candidates` 的 `route_rank = 1` 完全一致（不变量 43）；
+- 选源与定价同源：27 行售价行的采纳源与 `fn_route_candidates` 的 `route_rank = 1` 完全一致（不变量 43）；
   汇率留痕可用留痕日期独立复算（不变量 45），同币种行不留快照
 - 下单写路径实测（`tc-connect order place`）：变体 9 × 2 张 → 订单 7（CNY 1171.60 = 585.80 × 2，
   明细单价与 `fn_price_variant` 输出一致）；同一幂等键重复提交返回同一张单（`created=false`），
@@ -1131,7 +1160,7 @@ PERFORM 1 FROM supplier_session ss WHERE ss.id = ANY(v_session_ids) ORDER BY ss.
 ## 18. 有效期：异构差异不许被抹平
 
 USJ 有单日票（`pass_type = 1d`）和两日票（`pass_type = 2d`）。
-源侧 zowoyoo 的 `ZWO-2D-BASE` 确实是个两日票，源侧场次也只在 2026-11-19 一天。
+源侧 zowoyoo 的 `ZWO-2D-BASE` 确实是个两日票，源侧场次也只在 `<日期>` 一天。
 我们的规范场次是「(商品, 日期, 时段)」一行 —— 单日票和两日票共用同一个场次。
 
 而出券写死的是「场次当天 + 1 天」：
@@ -1140,7 +1169,7 @@ USJ 有单日票（`pass_type = 1d`）和两日票（`pass_type = 2d`）。
 valid_to = (session_date + 1)::timestamptz
 ```
 
-结果：卖了两日票，发出来的券只管 2026-11-19 一天。
+结果：卖了两日票，发出来的券只管 `<日期>` 一天。
 客户第二天拿着付过钱的票到门口，闸机判 expired ——
 钱收了、票买了、门不认。这是本项目里最贵的一种 bug（客诉 + 赔付 + 平台罚款）。
 
@@ -1906,3 +1935,119 @@ LEFT JOIN LATERAL (
 | 112 | 单张形态的成分行必须与明细的采纳源一致（两处说的不是同一个源） |
 
 门禁住在 `v_invariant_checks_reassign` 里。
+
+## 30. 源侧的售卖份数区间：成团人数与单笔上限
+
+### 30.1 这件事是什么
+
+`supplier_price_calendar` 上有一对整数 `min_qty` / `max_qty`。
+它说的是「这份报价能接的最小 / 最大份数」：`min_qty > 1` 是最少成团人数
+（携程 `priceSettingType = 4` 的「最少 6 人成团」），`max_qty` 是单笔上限。
+种子里填了，但全库没有一处读它 —— 这条事实一直是死的。
+
+### 30.2 为什么非读不可
+
+按团报价的源价行是「整团 1200，最少 6 人」。客户只买 1 张 →
+系统按整团价收了 1200 → 源侧因为不足 6 人直接拒单。
+钱收了、票出不来，这是「收了钱出不了票」最典型的形态。
+
+### 30.3 唯一实现
+
+| 位置 | 干什么 |
+|---|---|
+| `fn_source_quantity_limits(supplier_variant_id, product_variant_ids[], date)` | 唯一读法：这个源、这些规范变体、这一天能接的份数区间。键与选源函数（`fn_route_candidates`）连源价行时用的是同一把，所以读到的一定是定价时看到的那一行。读不到 = 源侧没给约束 = 不拦 |
+| `fn_qty_servable(min_qty, max_qty, quantity)` | 唯一判定：这个源接不接得住这个份数 |
+| `fn_place_order()` | 落单前的区间校验（按明细逐项判，份数与源 SKU 归拢） |
+| `fn_reassign_order_item()` | 改派前的区间校验（新源接不住就不改派） |
+
+### 30.4 份数的单位 = 源侧的售卖单位
+
+也就是我们发给源侧的那条预订里的份数：单张·按人 = 份（票），
+单张·按团 = 人（团人数），套装 = 套，配方 = 该源 SKU 的份数。
+按团报价的团总价只在人数达标时成立 —— 1 个人不能按团价成交。
+
+### 30.5 同一个源 SKU 顶多个成分时比的是总份数
+
+参数化源里成人票与儿童票是**同一个源 SKU**，源侧收到的是
+**一条预订里的总份数**（2 份成人 + 1 份儿童 = 3 份）。
+按成分各判各的会漏掉「合起来超上限」：每份单独看都合法，
+合起来超过源侧的单笔上限，源侧照样拒单。
+
+### 30.6 代价说清楚
+
+- **我们不按份数换源。** 换了源就是另一个价，而售价行没有份数维度；
+  要按份数换源，得给价格加阶梯（另一个增量）。这次只做「如实拦住 + 说清」。
+- **读侧还没有这一层。** C 端日历格子目前不带「可买份数区间」，
+  客户仍可能在下单时才发现买不成 —— 读侧的那一层是下一个增量。
+
+### 30.7 不变量 113-115
+
+| # | 守什么 |
+|---|---|
+| 113 | 明细留痕的份数必须落在留痕的区间内（留痕自洽） |
+| 114 | 区间留痕必须指向明细当前的采纳源（留痕说的源 = 明细用的源） |
+| 115 | 改派过的明细必须记着当前采纳源的区间（改派之后区间跟着新源换） |
+
+门禁住在 `v_invariant_checks_qty_limits` 里。
+
+## 31. 按团报价的单位价口径：总价 → 单位价只有一个实现
+
+### 31.1 这件事是什么
+
+按团报价的源价行给的是**团总价 / 团成本**（整团 1200 / 团成本 1100）。
+订单明细里记的单位价与单位成本是**分摊到人**的（171.43 / 157.14）。
+
+这是两个不同的量。写路径（`fn_place_order`）一直是对的 ——
+它分摊之后再落明细。但读路径（`v_reassign_candidates`）比售价时做了分摊、
+比成本时却直接拿团成本和人均成本比：1100 ≠ 157.14，
+于是**每一条按团报价的未收款明细都被误报成「成本变了」**。
+
+而真去改派，写路径自己返回 `no_change` —— 清单说的与写路径做的不一样，
+清单就不可信。
+
+### 31.2 唯一实现
+
+| 位置 | 干什么 |
+|---|---|
+| `fn_unit_amount(basis, total, quantity)` | 唯一实现：「总价 → 单位价」。按团报价按人分摊并保留两位小数，按人计价原样返回 |
+| `fn_place_order()` | 落单时算单位价与单位成本（整体替换一次，不再自己写一遍 CASE） |
+| `fn_reassign_order_item()` | 改派时算单位价与单位成本（同上） |
+| `v_reassign_candidates` | 待改派清单（整体替换一次，成本与价格的比较改走同一口径） |
+
+三条路都调同一个函数。清单说的与写路径做的就一定一样 ——
+因为它们本来就是同一段算术。
+
+### 31.3 按团的人均只是分摊，不是价
+
+团总价与人数不成正比。分摊到人 171.43 那个数，
+**不许拿去和按人计价的单价比**。它是「一个人分摊到多少」，
+不是「一个人买多少钱」。两个口径放在同一张表上比较时，
+必须先知道自己比较的是哪一个。
+
+### 31.4 明细里记的是分摊后的数，团价留在快照里
+
+明细的 `unit_price` / `unit_cost` 记分摊后的数。
+团总价与团成本留在明细快照里（`detail_snapshot->'group_total'` / `->'cost_price'`）。
+
+对账时看的是**当时那一版**的团价，不是今天的。
+源侧后来改了团价、改了成团人数，重算一遍得到的是今天的价格，
+不是当时报给客户的那个价。
+
+### 31.5 不变量 116-118
+
+| # | 守什么 |
+|---|---|
+| 116 | 按团明细的单位价必须等于团总价分摊到人（写路径的分摊口径自洽） |
+| 117 | 按团明细的单位成本必须等于团成本分摊到人（成本也分摊，不许拿团成本冒充单位成本） |
+| 118 | 待改派清单说「成本变了」的按团明细，按人均口径算也必须真的变了（清单与写路径同口径） |
+
+门禁住在 `v_invariant_checks_reassign_basis` 里。
+
+### 31.6 代价说清楚
+
+- **人均单价与团总价不再能互相反推。** 保留两位小数的分摊，
+  `171.43 × 7 = 1200.01`，与团总价差 1 分。对账时以快照里的团总价为准，
+  不以「单位价 × 人数」为准。
+- **读侧的候选清单口径变了。** 改口径之前按团明细全部被误报，
+  改之后只有真的变了成本的才出现在清单里。清单变短了，
+  这是它终于开始说实话。

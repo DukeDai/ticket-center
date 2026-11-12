@@ -1243,7 +1243,7 @@ VALUES (6,'TC20261103000006',1,3,'fulfilled','paid','fulfilled','CNY',1200.00,0.
 
 INSERT INTO sales_order_item (id, order_id, product_id, channel_listing_id, supplier_product_id, supplier_id, session_id, ticket_type_id, quantity, unit_price, unit_cost, total_price, currency, detail_snapshot, status, product_variant_id, pricing_basis) OVERRIDING SYSTEM VALUE
 VALUES (7,6,7,10,11,7,8,12,7,171.43,157.14,1200.00,'CNY',
- '{"title":"北京一日游 · 团队票","date":"2026-11-17","group_total":1200.00,"group_size":7,"price_setting_type":4,"pricing_basis":"per_group","unit_quantity":1,"ticket_type":"标准票（不区分人群）","meeting_point":"东方广场集合点"}','ticketed',17,'per_group');
+ '{"title":"北京一日游 · 团队票","date":"2026-11-17","group_total":1200.00,"cost_price":1100.00,"group_size":7,"price_setting_type":4,"pricing_basis":"per_group","unit_quantity":1,"ticket_type":"标准票（不区分人群）","meeting_point":"东方广场集合点"}','ticketed',17,'per_group');
 
 -- -------------------------------------------------------------------------------------
 -- 16.13 订单侧的库存预占（009）
@@ -2813,6 +2813,175 @@ BEGIN
     -- ---- 门禁：改派走完之后，全库不变量必须仍然全绿 ----
     IF EXISTS (SELECT 1 FROM v_invariant_checks WHERE NOT passed) THEN
         RAISE EXCEPTION '改派演示之后不变量必须全绿：%',
+          (SELECT string_agg(check_name || '（' || actual || '）', '；')
+             FROM v_invariant_checks WHERE NOT passed);
+    END IF;
+END $$;
+
+
+-- =====================================================================================
+-- 21. 源侧的售卖份数区间（025）：钱收了票出不来，就在这里挡住
+--
+-- 按团报价那张票的源价行写着「最少 6 人成团，最多 40 人」——
+-- 这一对整数（min_qty / max_qty）以前全库没有一处读它。
+-- 客户买 1 张，系统按整团价收了 1200，源侧因为不足 6 人直接拒单：
+-- 钱收了、票出不来。
+--
+-- 这一段当场跑四遍：
+--   1 个人      → 报错（区间 6..40，这一单要 1 份）
+--   7 个人      → 下单成功，留痕记着当时的区间
+--   41 个人     → 报错（超过单笔上限）
+--   7 套家庭套餐 → 报错（同一个源 SKU 顶成人与儿童，源侧看到的是这个 SKU 的
+--                    总份数 21，超过它的上限 20）
+--
+-- 最后一条是这一段里最要紧的：按成分各判各的会以为 14 份成人 + 7 份儿童
+-- 都合法（每一份都 ≤ 20），合起来的 21 份才是源侧真正收到的那一笔。
+--
+-- 口径写在 db/migrations/025_source_quantity_limits.sql 的头里：
+--   份数的单位 = 源侧的售卖单位（单张按人 = 份，按团 = 人，套装 = 套，
+--   配方 = 该源 SKU 的份数）；落单时必须落在采纳源的区间内。
+-- =====================================================================================
+DO $$
+DECLARE
+    v_variant  BIGINT;
+    v_combo    BIGINT;
+    v_date     DATE;
+    v_cdate    DATE;
+    v_msg      TEXT;
+    v_order_id BIGINT;
+    v_limits   JSONB;
+    v_holders  JSONB := '[]'::jsonb;
+    i          INT;
+BEGIN
+    -- 按团报价那张票（源价行：最少 6 人、最多 40 人）
+    SELECT id INTO v_variant
+      FROM product_variant
+     WHERE variant_key = 'standard:1d';
+
+    SELECT date INTO v_date
+      FROM supplier_price_calendar
+     WHERE product_variant_id = v_variant
+       AND min_qty > 1
+     LIMIT 1;
+
+    IF v_variant IS NULL OR v_date IS NULL THEN
+        RAISE EXCEPTION '份数演示：找不到按团报价的那个变体或它的源价行';
+    END IF;
+
+    -- ---- 1 个人：源侧不接（这条以前会被放过去） ----
+    v_msg := NULL;
+
+    BEGIN
+        PERFORM o.order_id
+          FROM fn_place_order(1, 'idem-c2c-012-qty-under',
+                   jsonb_build_array(jsonb_build_object(
+                       'variant_id', v_variant, 'quantity', 1, 'visit_date', v_date)),
+                   3, jsonb_build_object('name', '份数演示'), NULL, '[]'::jsonb) o;
+    EXCEPTION WHEN others THEN
+        GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    END;
+
+    IF v_msg IS NULL THEN
+        RAISE EXCEPTION '份数演示：1 个人按团价应该被拦住（源侧最少 6 人成团），但下单成功了';
+    END IF;
+
+    IF v_msg NOT LIKE '%只接 6 到 40 份%' OR v_msg NOT LIKE '%这一单要 1 份%' THEN
+        RAISE EXCEPTION '份数演示：报错要说清区间和差在哪，实际：%', v_msg;
+    END IF;
+
+    -- ---- 7 个人：接得住，下单成功，留痕记着当时的区间 ----
+    SELECT o.order_id INTO v_order_id
+      FROM fn_place_order(1, 'idem-c2c-013-qty-ok',
+               jsonb_build_array(jsonb_build_object(
+                   'variant_id', v_variant, 'quantity', 7, 'visit_date', v_date)),
+               3, jsonb_build_object('name', '份数演示'), NULL, '[]'::jsonb) o;
+
+    IF v_order_id IS NULL THEN
+        RAISE EXCEPTION '份数演示：7 个人应该接得住（下限 6、上限 40），但下单失败了';
+    END IF;
+
+    SELECT detail_snapshot -> 'quantity_limits' INTO v_limits
+      FROM sales_order_item
+     WHERE order_id = v_order_id;
+
+    IF (v_limits -> 0 ->> 'min_qty')::int <> 6
+       OR (v_limits -> 0 ->> 'max_qty')::int <> 40
+       OR (v_limits -> 0 ->> 'quantity')::int <> 7 THEN
+        RAISE EXCEPTION '份数演示：留痕应该记着当时的区间 6..40 与这一单的 7 份，实际：%', v_limits::text;
+    END IF;
+
+    -- ---- 41 个人：超过单笔上限 ----
+    v_msg := NULL;
+
+    BEGIN
+        PERFORM o.order_id
+          FROM fn_place_order(1, 'idem-c2c-014-qty-over',
+                   jsonb_build_array(jsonb_build_object(
+                       'variant_id', v_variant, 'quantity', 41, 'visit_date', v_date)),
+                   3, jsonb_build_object('name', '份数演示'), NULL, '[]'::jsonb) o;
+    EXCEPTION WHEN others THEN
+        GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    END;
+
+    IF v_msg IS NULL THEN
+        RAISE EXCEPTION '份数演示：41 个人超过单笔上限 40，应该被拦住，但下单成功了';
+    END IF;
+
+    IF v_msg NOT LIKE '%这一单要 41 份%' THEN
+        RAISE EXCEPTION '份数演示：超上限的报错要说清差在哪，实际：%', v_msg;
+    END IF;
+
+    -- ---- 配方：同一个源 SKU 顶成人与儿童，份数按这个 SKU 的总数算 ----
+    --
+    -- 家庭套餐一份 = 2 成人 + 1 儿童，三个名额都落在同一个参数化源 SKU 上。
+    -- 订 7 套 = 21 份 > 那个 SKU 的上限 20。
+    SELECT id INTO v_combo
+      FROM product_variant
+     WHERE variant_key = 'family:2adult:1child:studio_only';
+
+    SELECT date INTO v_cdate
+      FROM supplier_price_calendar
+     WHERE product_variant_id = 9
+     LIMIT 1;
+
+    -- 实名：成人 2 人 × 7 套 = 14 人，儿童 1 人 × 7 套 = 7 人。
+    -- （先把实名给齐，让这一段只考份数这一件事。）
+    FOR i IN 1..14 LOOP
+        v_holders := v_holders || jsonb_build_array(
+            jsonb_build_object('variant_id', 9, 'sequence', i, 'field_code', 'holder_name', 'value', '成人' || i),
+            jsonb_build_object('variant_id', 9, 'sequence', i, 'field_code', 'id_number',  'value', '110101199001012' || lpad(i::text, 3, '0')));
+    END LOOP;
+
+    FOR i IN 1..7 LOOP
+        v_holders := v_holders || jsonb_build_array(
+            jsonb_build_object('variant_id', 10, 'sequence', i, 'field_code', 'holder_name', 'value', '儿童' || i),
+            jsonb_build_object('variant_id', 10, 'sequence', i, 'field_code', 'dob',        'value', '2018-05-20'));
+    END LOOP;
+
+    v_msg := NULL;
+
+    BEGIN
+        PERFORM o.order_id
+          FROM fn_place_order(1, 'idem-c2c-015-qty-combo',
+                   jsonb_build_array(jsonb_build_object(
+                       'variant_id', v_combo, 'quantity', 7, 'visit_date', v_cdate)),
+                   3, jsonb_build_object('name', '份数演示'), NULL, v_holders) o;
+    EXCEPTION WHEN others THEN
+        GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    END;
+
+    IF v_msg IS NULL THEN
+        RAISE EXCEPTION '份数演示：7 套家庭套餐 = 源 SKU 21 份（上限 20），应该被拦住，但下单成功了';
+    END IF;
+
+    -- 21 = 7 套 × (2 成人 + 1 儿童) —— 比的是这个源 SKU 的总份数，不是单个成分的份数。
+    IF v_msg NOT LIKE '%这一单要 21 份%' THEN
+        RAISE EXCEPTION '份数演示：配方侧要按源 SKU 的总份数算（21 份），实际：%', v_msg;
+    END IF;
+
+    -- ---- 门禁：这一段走完之后，全库不变量必须仍然全绿 ----
+    IF EXISTS (SELECT 1 FROM v_invariant_checks WHERE NOT passed) THEN
+        RAISE EXCEPTION '份数演示之后不变量必须全绿：%',
           (SELECT string_agg(check_name || '（' || actual || '）', '；')
              FROM v_invariant_checks WHERE NOT passed);
     END IF;

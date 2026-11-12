@@ -366,5 +366,5 @@ const usageVariant = `  tc-connect variant    compare  --db name [--product 6] [
   tc-connect variant    feed     --db name [--channel 1] [--product 6] [--json out.json]
   tc-connect variant    composition --db name [--variant 18] [--channel 1] [--json out.json]
   tc-connect variant    bundle   --db name [--variant 21] [--json out.json]
-  tc-connect variant    supply   --db name [--variant 18] [--date 2026-11-18] [--channel 1] [--json out.json]
+  tc-connect variant    supply   --db name [--variant 18] [--date <日期>] [--channel 1] [--json out.json]
 `

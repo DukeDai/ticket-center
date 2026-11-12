@@ -43,7 +43,7 @@ DB = os.environ.get('DRYRUN_DB', 'ticket_center_dryrun')
 PSQL = os.environ.get('PSQL_BIN', 'psql')
 HOST = os.environ.get('PGHOST', '127.0.0.1')
 
-TODAY = '2026-11-16'   # 演练基准日期（与 mapping_rules.json 的 base_date 一致）
+TODAY = None   # 演练基准日期：唯一来源是 configs/mapping_rules.json 的 base_date（run() 里读）
 
 _TC_CONNECT = None
 
@@ -345,7 +345,9 @@ def run():
     rules = load_json(RULES_PATH)
     catalog = load_json(os.path.join(FIXTURES, 'canonical_catalog.json'))
     pricing_rule = rules.get('pricing', {})
-    TODAY = rules.get('base_date', TODAY)
+    TODAY = rules.get('base_date')
+    if not TODAY:
+        raise SystemExit('configs/mapping_rules.json 缺 base_date —— 演练基准日期只有一个来源，不猜')
 
     # ---- ① 规范侧先落库：覆盖判定要用到规范变体
     stmts, canon, canon_variants, product_ids = build_canonical(catalog)

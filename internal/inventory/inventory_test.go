@@ -221,6 +221,60 @@ func TestHoldIsIdempotent(t *testing.T) {
 	}
 }
 
+// 「用户没指定 TTL」和「用户指定了默认的 900」是同一件事。
+//
+// 这条曾经炸过：Go 侧把「没指定」编码成 SQL NULL 传进去，
+// 而 PostgreSQL 的 DEFAULT 只在**省略实参**时生效 —— 显式传 NULL 拿到的是 NULL。
+// NULL 顺着哈希链把 idempotency_record.request_hash 撑成 NULL（NOT NULL），
+// 预占在第一步就炸：「null value in column "request_hash" ... violates not-null constraint」。
+//
+// 修在库里（027）：函数开头把 NULL 归一成 900。
+// 这里钉住契约：两种写法必须落在同一张预占上（同一个 hash）。
+func TestHoldWithoutTTLMeansDefaultTTL(t *testing.T) {
+	db := seeded(t)
+	s := svc(t, db)
+
+	req := holdReq("HOLD-T2A", knownVariant, 1, visitDate(t, db, knownVariant))
+	req.TTLSeconds = 0 // 0 = 调用方没指定 → Go 侧传 NULL → 库里归一成 900
+
+	res, err := s.Hold(req)
+	if err != nil {
+		t.Fatalf("不指定 TTL 的预占应该成功：%v", err)
+	}
+	if !res.Created {
+		t.Fatal("应该新建了一张预占")
+	}
+
+	// 落库的到期时间必须是确定的：NULL 的预占永远不过期，
+	// 那是一个不会释放的库存占用（不变量 119 守的就是这条）。
+	//
+	// 表结构上 expires_at 是 NOT NULL，列本身已经挡了一层；
+	// 不变量 119 守的是「别让这个约束在某次迁移里被放松」。
+	rows := testdb.Exec(t, db.Name,
+		"SELECT round(extract(epoch FROM (expires_at - created_at)))::int "+
+			"FROM inventory_hold WHERE hold_no = 'HOLD-T2A';")
+	if len(rows) == 0 {
+		t.Fatal("预占没落库")
+	}
+	if rows[0][0] != "900" {
+		t.Fatalf("不指定 TTL 时的存活秒数不对：期望 900，实际 %s", rows[0][0])
+	}
+
+	// 显式写 900 与不指定是同一笔：同一个预占号，幂等命中，不新建。
+	req2 := holdReq("HOLD-T2A", knownVariant, 1, visitDate(t, db, knownVariant))
+	req2.TTLSeconds = 900
+	res2, err := s.Hold(req2)
+	if err != nil {
+		t.Fatalf("重放预占失败：%v", err)
+	}
+	if res2.HoldID != res.HoldID {
+		t.Fatalf("不指定 TTL 与指定 900 应该是同一张预占：第一次 %d，第二次 %d", res.HoldID, res2.HoldID)
+	}
+	if res2.Created {
+		t.Fatal("重放不该新建预占")
+	}
+}
+
 func TestHoldSameKeyDifferentContentFails(t *testing.T) {
 	db := seeded(t)
 	s := svc(t, db)

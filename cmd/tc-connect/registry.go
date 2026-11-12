@@ -61,7 +61,7 @@ func usage() {
 const commonUsage = `
 下单请求文件 req.json 的字段：
   {"channel_id":1,"customer_id":3,"idempotency_key":"demo-001",
-   "items":[{"variant_id":9,"quantity":2,"visit_date":"2026-11-18"}],
+   "items":[{"variant_id":9,"quantity":2,"visit_date":"<日期>"}],
    "holders":[{"variant_id":9,"sequence":1,"field_code":"holder_name","value":"张三"}],
    "contact":{"phone":"13800000000"},"buyer_note":""}
 

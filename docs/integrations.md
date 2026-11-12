@@ -14,7 +14,8 @@
 ```bash
 make build          # 构建 bin/tc-connect
 make test           # 单元测试
-make mock           # 协议级自检（本地 mock，14 项断言，不需要凭证）
+make mock           # 协议级自检（本地 mock，不需要凭证）
+make counts         # 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
 make layers         # 分层连通性测试（真实端点）
 make check          # 提交前完整自检（vet + test + mock + 演练器）
 ```
@@ -191,14 +192,14 @@ mappingId: 80041201-8004120101|2 + 80041201-8004120102|2 + 80041902-8004190201|1
 ### `tc-connect price` — 定价（走库里的唯一实现）
 
 ```bash
-./bin/tc-connect price --variant 11 --date 2026-11-18
+./bin/tc-connect price --variant 11 --date YYYY-MM-DD
 ./bin/tc-connect price --reprice
 ```
 
-单变体查询的输出：
+单变体查询的输出（日期取「当天有售价」的那天，见 `variant feed`）：
 
 ```
-变体 11 · 2026-11-18
+变体 11 · <日期>
   采纳源商品 9（CNY）
   源净价 486.00 → 成本 486.00 CNY（汇率 1（同币种））
   售价 498.00  [锁价]   划线价 498.00（折扣 0%）
@@ -263,7 +264,7 @@ make order-demo                                       # 端到端演示（自己
   "channel_id": 1,
   "customer_id": 3,
   "idempotency_key": "cli-demo-001",
-  "items": [{"variant_id": 9, "quantity": 2, "visit_date": "2026-11-19"}],
+  "items": [{"variant_id": 9, "quantity": 2, "visit_date": "<日期>"}],
   "holders": [
     {"variant_id": 9, "sequence": 1, "field_code": "holder_name", "value": "张三"},
     {"variant_id": 9, "sequence": 1, "field_code": "id_number", "value": "H110101199001011234"}
@@ -438,7 +439,7 @@ Go、psql、脚本走的是同一条路。
 ```bash
 ./bin/tc-connect stock show  --db ticket_center --supplier-session 1 [--ticket-type 1] [--source-ticket-type 15] [--json out.json]
 ./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 \
-                              --qty 2 --date 2026-11-18 [--cart 3] [--ttl 900] [--json out.json]
+                              --qty 2 --date YYYY-MM-DD [--cart 3] [--ttl 900] [--json out.json]
 ./bin/tc-connect hold release --db ticket_center --no HOLD001 [--reason cart_abandoned] [--json out.json]
 ./bin/tc-connect hold expire --db ticket_center [--limit 500] [--json out.json]
 ./bin/tc-connect hold show   --db ticket_center --no HOLD001 [--json out.json]
@@ -480,7 +481,7 @@ Go 侧**不**算可售数、**不**判断够不够、**不**改预占状态。
 ./bin/tc-connect variant feed     --db ticket_center [--channel 1] [--product 6] [--json out.json]
 ./bin/tc-connect variant composition --db ticket_center [--variant 18] [--channel 1] [--json out.json]
 ./bin/tc-connect variant bundle   --db ticket_center [--variant 21] [--json out.json]
-./bin/tc-connect variant supply   --db ticket_center [--variant 18] [--date 2026-11-18] [--channel 1] [--json out.json]
+./bin/tc-connect variant supply   --db ticket_center [--variant 18] [--date <日期>] [--channel 1] [--json out.json]
 ```
 
 | 子命令 | 回答什么问题 | 读什么 |

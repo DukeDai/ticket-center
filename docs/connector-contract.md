@@ -462,7 +462,7 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 直接生成
 | **组合现在能表达了**（2026-11-07 补上） | 同一份报文用 `tc-connect compose apply` 解析成 4 行配方（规范侧组件声明 + 源侧成分逐项对得上）；不变量 78-81 全 PASS |
 | **组合现在能卖了**（2026-11-07 补上） | 成本 = Σ 成分单价 × 数量（成分取自源侧配方，不重新选源）；预订按配方带整组源 SKU；出券按成分张数发。卖不了的时候 `v_combo_price_gap` 逐条列原因（成分缺价 / 场次不同 / 源不同 / 价格锁定 / 按团报价） |
 | **预订的单位是源 SKU**（2026-11-08 补上） | 参数化源里成人票与儿童票是**同一个**源 SKU（`ZWO-1D-BASE`，人群是购买时选的一档）。按成分建预订就是同一个源 SKU 订两次：源侧看到两张订单单，一条客户订单对两个源单号。改成一个源 SKU 一条预订，成分的拆分留在请求明细里 |
-| 演练库 **108 条不变量全 PASS** | 模型在真实报文结构下自洽 |
+| 演练库 **不变量全 PASS** | 模型在真实报文结构下自洽 |
 | 同一商品同一供应商只能一个 primary 映射 | 演练撞出 `ux_map_single_primary` 约束 → 映射生成逻辑按 (商品, 源) 去重 |
 
 **演练暴露的两个额外规则**（都是落库时才撞到的，已写进脚本注释）：
@@ -793,7 +793,8 @@ request / response / http_status / latency_ms / trace_id`），**落库前递归
 ```bash
 make build                          # 构建 bin/tc-connect
 make test                           # Go 单元测试
-make mock                           # 协议级自检（本地 mock，14 项断言）
+make mock                           # 协议级自检（本地 mock）
+make counts                         # 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
 make layers                         # 分层连通性测试
 make check                          # 提交前完整自检（vet + test + mock + 演练器）
 ```
@@ -807,7 +808,7 @@ make check                          # 提交前完整自检（vet + test + mock 
 ./bin/tc-connect normalize --source trip_com --fixture fixtures/trip_com_catalog.json
 ./bin/tc-connect compose plan  --source globaltix --fixture fixtures/globaltix_catalog.json  # 组合配方解算（不写库）
 ./bin/tc-connect compose apply --source globaltix --fixture fixtures/globaltix_catalog.json  # 落库
-./bin/tc-connect price --variant 11 --date 2026-11-18   # 某变体某天的对客价（走库里唯一实现）
+./bin/tc-connect price --variant 11 --date <日期>      # 某变体某天的对客价（走库里唯一实现；日期现查：variant feed）
 ./bin/tc-connect price --reprice                          # 源成本/汇率变了 → 统一重算
 ```
 
@@ -823,7 +824,7 @@ make check                          # 提交前完整自检（vet + test + mock 
   – L2 目录    凭证缺失（见 L1）   … L3 / L4 / L5 / L6 同
 ```
 
-**协议自检（14 项全通过：4 项离线 + 10 项协议）**：
+**协议自检（4 项离线 + 10 项协议；断言条数跑 `make counts`）**：
 
 | 断言 | 验证内容 |
 |---|---|

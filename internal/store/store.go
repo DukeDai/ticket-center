@@ -167,7 +167,7 @@ func CreateDatabase(bin, host, name string) error {
 //
 // psql 的输出长这样：
 //
-//	psql:... ERROR:  变体 9 在 2026-11-18 没有可售价格（...）
+//	psql:... ERROR:  变体 9 在 <日期> 没有可售价格（...）
 //
 // 这里把 ERROR 后面那句抠出来，其余噪音丢掉 —— 调用方要的是「卡在哪」。
 func PLError(err error) error {

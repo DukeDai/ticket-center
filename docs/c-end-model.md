@@ -245,7 +245,8 @@ c_variant_calendar (channel_id, product_variant_id, date)
 **卡片起价不能把加购件算进去**：快速通行证 ¥398 不是「入场起价」。
 `v_c_readmodel_drift` 已排除 `variant_role='addon'` 的变体。
 
-实测（北京环球影城，C2C 渠道，2026-11-18）：
+实测（北京环球影城，C2C 渠道，灌库当天 + 5 天；种子日期是 `current_date + N`，
+换库重灌后日期会平移，用 `./bin/tc-connect variant feed --db <库> --channel 1` 现查）：
 
 | 变体 | 售价 | 可履约源数 |
 |---|---|---|

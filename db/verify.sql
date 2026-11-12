@@ -113,7 +113,7 @@ ORDER BY p.product_code;
 
 \echo ''
 \echo '════════════════════════ E. 不变量断言（全部应 passed=t） ════════════════════════'
--- 断言来源：迁移文件里的 v_invariant_checks 视图（112 条，单一事实来源）
+-- 断言来源：迁移文件里的 v_invariant_checks 视图（条数以视图定义为准，单一事实来源）
 SELECT seq, check_name, expected, actual, passed,
        CASE WHEN passed THEN 'PASS' ELSE 'FAIL' END AS result
 FROM v_invariant_checks
@@ -565,6 +565,179 @@ SELECT order_item_id, current_supplier, new_supplier,
        current_unit_price, new_unit_price, stale_reason
   FROM v_reassign_candidates
  ORDER BY order_item_id;
+
+\echo ''
+\echo '════════════════════════ K11. 源侧的售卖份数区间（025） ═══════════════════════'
+-- 源价行上的 min_qty / max_qty 是源侧的一手事实（最少成团人数 / 单笔上限）。
+-- 这一对整数以前全库没有一处读它：客户买 1 张按团价的票，系统按整团价收了 1200，
+-- 源侧因为不足 6 人拒单 —— 钱收了、票出不来。
+--
+-- 口径：份数的单位 = 源侧的售卖单位（单张按人 = 份，按团 = 人，套装 = 套，
+-- 配方 = 该源 SKU 的份数）。同一个源 SKU 顶多个成分时比的是这个 SKU 的总份数 ——
+-- 源侧收到的是一条预订里的总份数。
+
+\echo '--- 源侧声明了区间的价行（min_qty / max_qty） ---'
+SELECT spc.supplier_variant_id, spc.product_variant_id, spc.date,
+       spc.min_qty, spc.max_qty,
+       fn_qty_servable(spc.min_qty, spc.max_qty, spc.min_qty) AS servable_at_min,
+       fn_qty_servable(spc.min_qty, spc.max_qty, spc.max_qty) AS servable_at_max
+  FROM supplier_price_calendar spc
+ WHERE spc.min_qty IS NOT NULL OR spc.max_qty IS NOT NULL
+ ORDER BY spc.supplier_variant_id, spc.product_variant_id, spc.date;
+
+\echo '--- 明细快照里记着的区间（当时源侧接不接得住） ---'
+SELECT oi.order_id, oi.product_variant_id, oi.quantity,
+       l->>'supplier_variant_id' AS source_sku,
+       l->'product_variant_ids'  AS canonical_variants,
+       l->>'min_qty'              AS min_qty,
+       l->>'max_qty'              AS max_qty,
+       l->>'quantity'             AS bought_qty,
+       fn_qty_servable((l->>'min_qty')::int, (l->>'max_qty')::int,
+                       (l->>'quantity')::int) AS servable
+  FROM sales_order_item oi
+  CROSS JOIN LATERAL jsonb_array_elements(
+          COALESCE(oi.detail_snapshot -> 'quantity_limits', '[]'::jsonb)) l
+ ORDER BY oi.order_id;
+
+\echo '--- 落单时当场拦（三种都拦住才算数） ---'
+BEGIN;
+DO $$
+DECLARE
+    v_variant BIGINT;
+    v_combo   BIGINT;
+    v_date    DATE;
+    v_cdate   DATE;
+    v_msg     TEXT;
+    v_case    TEXT;
+BEGIN
+    SELECT id INTO v_variant FROM product_variant WHERE variant_key = 'standard:1d';
+    SELECT id INTO v_combo   FROM product_variant WHERE variant_key = 'family:2adult:1child:studio_only';
+
+    -- 日期跟着种子数据走（种子把按团那张票放在第 13 天、配方放在第 12 天）
+    SELECT date INTO v_date
+      FROM supplier_price_calendar
+     WHERE product_variant_id = v_variant AND min_qty > 1 LIMIT 1;
+
+    SELECT date INTO v_cdate
+      FROM supplier_price_calendar
+     WHERE product_variant_id = 9 LIMIT 1;
+
+    FOREACH v_case IN ARRAY ARRAY['按团报价 1 个人（源侧最少 6 人成团）',
+                                  '按团报价 41 个人（单笔上限 40）',
+                                  '配方 7 套（同一个源 SKU 21 份，上限 20）']
+    LOOP
+        v_msg := NULL;
+
+        BEGIN
+            IF v_case LIKE '按团报价 1 个人%' THEN
+                PERFORM o.order_id FROM fn_place_order(1, 'verify-k11-under',
+                    jsonb_build_array(jsonb_build_object('variant_id', v_variant, 'quantity', 1,
+                                                         'visit_date', v_date)),
+                    3, jsonb_build_object('name', 'K11 演示'), NULL, '[]'::jsonb) o;
+            ELSIF v_case LIKE '按团报价 41 个人%' THEN
+                PERFORM o.order_id FROM fn_place_order(1, 'verify-k11-over',
+                    jsonb_build_array(jsonb_build_object('variant_id', v_variant, 'quantity', 41,
+                                                         'visit_date', v_date)),
+                    3, jsonb_build_object('name', 'K11 演示'), NULL, '[]'::jsonb) o;
+            ELSE
+                PERFORM o.order_id FROM fn_place_order(1, 'verify-k11-combo',
+                    jsonb_build_array(jsonb_build_object('variant_id', v_combo, 'quantity', 7,
+                                                         'visit_date', v_cdate)),
+                    3, jsonb_build_object('name', 'K11 演示'), NULL, '[]'::jsonb) o;
+            END IF;
+        EXCEPTION WHEN others THEN
+            GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+        END;
+
+        RAISE NOTICE '% → %', v_case, COALESCE(v_msg, '【没有被拦住 —— 这是问题】');
+    END LOOP;
+END $$;
+ROLLBACK;
+
+\echo ''
+\echo '════════════════════════ K12. 按团报价的单位价口径（026） ═════════════════════════'
+-- 按团报价的源价行给的是**团总价 / 团成本**（整团 1200 / 1100），
+-- 明细里记的单位价与单位成本是**分摊到人**的（171.43 / 157.14）。
+-- 分摊口径只有一个实现：fn_unit_amount(basis, total, quantity)。
+--
+-- 这一节回答三个问题：
+--   1. 写路径分摊对不对？
+--   2. 读路径（待改派清单）的成本比较与写路径同口径吗？
+--   3. 口径没修好时，不变量 118 会不会当场报警？
+
+\echo '--- 按团明细：团总价 / 团成本 → 分摊到人 ---'
+SELECT oi.id AS order_item_id,
+       oi.pricing_basis,
+       oi.quantity,
+       (oi.detail_snapshot ->> 'group_total')::numeric AS group_total,
+       oi.unit_price,
+       fn_unit_amount(oi.pricing_basis, (oi.detail_snapshot ->> 'group_total')::numeric, oi.quantity) AS expect_unit_price,
+       (oi.detail_snapshot ->> 'cost_price')::numeric AS group_cost,
+       oi.unit_cost,
+       fn_unit_amount(oi.pricing_basis, (oi.detail_snapshot ->> 'cost_price')::numeric, oi.quantity) AS expect_unit_cost,
+       (oi.unit_price IS NOT DISTINCT FROM fn_unit_amount(oi.pricing_basis, (oi.detail_snapshot ->> 'group_total')::numeric, oi.quantity)
+        AND oi.unit_cost  IS NOT DISTINCT FROM fn_unit_amount(oi.pricing_basis, (oi.detail_snapshot ->> 'cost_price')::numeric, oi.quantity))
+       AS allocated_ok
+  FROM sales_order_item oi
+ WHERE oi.pricing_basis = 'per_group'
+ ORDER BY oi.id;
+
+\echo '--- 读路径与写路径同口径：待改派清单里的成本比较 ---'
+-- 清单现在为空：按团的那一单（订单 12 / 明细 13）什么都没变，
+-- 修复前它会被误报成「成本变了」（团成本 1100 vs 人均成本 157.14）。
+SELECT count(*) AS stale_candidates FROM v_reassign_candidates;
+
+\echo '--- 不变量 118 在口径没修好时会不会报警（把读路径改回有 bug 的版本看一眼） ---'
+BEGIN;
+CREATE OR REPLACE VIEW v_reassign_candidates AS
+SELECT o.id AS order_id, o.order_no, o.channel_id, oi.id AS order_item_id, oi.product_id,
+       oi.product_variant_id, (oi.detail_snapshot ->> 'visit_date')::date AS visit_date,
+       oi.quantity, oi.supplier_product_id AS current_supplier_product_id, cur.name AS current_supplier,
+       oi.unit_price AS current_unit_price, oi.unit_cost AS current_unit_cost,
+       p.supplier_product_id AS new_supplier_product_id, nsup.name AS new_supplier,
+       CASE WHEN oi.pricing_basis = 'per_group' THEN round(p.sell_price / NULLIF(oi.quantity, 0), 2) ELSE p.sell_price END AS new_unit_price,
+       p.cost_price AS new_unit_cost,
+       (p.sell_price IS NOT NULL) AS can_reassign,
+       CASE WHEN p.sell_price IS NULL THEN '当天没有可用报价'
+            WHEN p.supplier_product_id IS DISTINCT FROM oi.supplier_product_id THEN '源变了'
+            WHEN (CASE WHEN oi.pricing_basis = 'per_group' THEN round(p.sell_price / NULLIF(oi.quantity, 0), 2) ELSE p.sell_price END) IS DISTINCT FROM oi.unit_price THEN '价变了'
+            WHEN p.cost_price IS DISTINCT FROM oi.unit_cost THEN '成本变了'
+       END AS stale_reason
+  FROM sales_order o
+  JOIN sales_order_item oi ON oi.order_id = o.id
+  LEFT JOIN LATERAL fn_price_variant(oi.product_variant_id, (oi.detail_snapshot ->> 'visit_date')::date, o.channel_id, o.channel_id) p ON true
+  LEFT JOIN supplier_product curp ON curp.id = oi.supplier_product_id
+  LEFT JOIN supplier cur ON cur.id = curp.supplier_id
+  LEFT JOIN supplier_product nsp ON nsp.id = p.supplier_product_id
+  LEFT JOIN supplier nsup ON nsup.id = nsp.supplier_id
+ WHERE o.status IN ('created','awaiting_payment') AND oi.status = 'pending'
+   AND oi.product_variant_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sales_payment sp WHERE sp.order_id = o.id AND sp.status = 'succeeded')
+   AND COALESCE((SELECT pv.variant_role FROM product_variant pv WHERE pv.id = oi.product_variant_id), 'base') <> 'combo'
+   AND (SELECT count(*) FROM sales_order_item_source s WHERE s.order_item_id = oi.id) <= 1
+   AND NOT EXISTS (SELECT 1 FROM booking b WHERE b.order_item_id = oi.id)
+   AND NOT EXISTS (SELECT 1 FROM voucher v WHERE v.order_item_id = oi.id AND v.status IN ('issued','used'))
+   AND (p.sell_price IS NULL OR p.supplier_product_id IS DISTINCT FROM oi.supplier_product_id
+        OR (CASE WHEN oi.pricing_basis = 'per_group' THEN round(p.sell_price / NULLIF(oi.quantity, 0), 2) ELSE p.sell_price END) IS DISTINCT FROM oi.unit_price
+        OR p.cost_price IS DISTINCT FROM oi.unit_cost);
+DO $$
+DECLARE
+  v_bad INT;
+BEGIN
+  -- 按 check_name 找，不按 seq 找：seq 会随着加条重新编号，
+  -- 按序号定位的那天，重排一次就静悄悄指到别的门禁上去了。
+  SELECT actual INTO v_bad FROM v_invariant_checks
+   WHERE check_name = '待改派清单说「成本变了」的按团明细：按人均口径算也必须真的变了';
+  IF v_bad IS NULL THEN
+    RAISE EXCEPTION '  找不到这条不变量（check_name 变了？门禁本身丢了）';
+  END IF;
+  IF v_bad > 0 THEN
+    RAISE NOTICE '  口径没修好时，「按团明细按人均口径算也必须真的变了」报警（actual=%）—— 门禁是活的', v_bad;
+  ELSE
+    RAISE NOTICE '  口径没修好时，「按团明细按人均口径算也必须真的变了」也没报警 —— 这是问题：门禁是死的';
+  END IF;
+END $$;
+ROLLBACK;
 
 \echo ''
 \echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'

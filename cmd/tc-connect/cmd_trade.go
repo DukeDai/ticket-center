@@ -1180,8 +1180,10 @@ const usageStock = `  tc-connect stock      show     --db name --supplier-sessio
 `
 
 const usageHold = `  tc-connect hold       create   --db name --no HOLD001 --channel 1 --variant 11
-                                  --qty 2 --date 2026-11-18 [--cart 3] [--ttl 900]
+                                  --qty 2 --date YYYY-MM-DD [--cart 3] [--ttl 900]
                                   [--json out.json]
+                                  （--date 取「当天有售价」的日期：先跑 variant feed 看；
+                                    种子的日期是 current_date+N，写死的日期会失效）
   tc-connect hold       release  --db name --no HOLD001 [--reason cart_abandoned]
                                   [--json out.json]
   tc-connect hold       expire   --db name [--limit 500] [--json out.json]

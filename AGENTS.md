@@ -7,7 +7,9 @@
 一个把多个 GDS / 票务平台（Ingresso、FonTicket、Goodfellows·JTB、GlobalTix、票付通…）的票券
 归一化成统一模型，同时支撑 **B 端分销**与 **C 端自营**售卖的中台。
 
-**当前阶段聚焦领域模型与物理模型**，API / Web 尚未实施；
+**当前阶段聚焦领域模型与物理模型**；C 端**只读** API 已落地（`cmd/tc-api` + `internal/capi`：
+浏览 / 变体差异 / 套餐构成 / 日历四个端点），**写侧与 Web 尚未实施**，也没有调用方身份
+（购物车 → 下单 → 支付这一段还没开口子）。
 **接入层已用 Go 实现**（`cmd/tc-connect` + `internal/`）：Trip.com 分销侧协议已完整核对，
 GlobalTix 端点待商务确认，其余五源待文档。**Go 1.23+ 是本仓库的必备工具链。**
 
@@ -18,7 +20,7 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
 ## 硬约束
 
 1. **SPEC.md 是合同。** 改任何业务行为，必须同步改 `SPEC.md` 对应章节；改领域模型必须同步改
-   `docs/ddd.md`；改表结构必须同步改 `docs/schema-design.md`。规格里列的 112 条不变量不得在改动中丢失。
+   `docs/ddd.md`；改表结构必须同步改 `docs/schema-design.md`。规格里列的不变量一条不得在改动中丢失。
 2. **不变量是门禁。** `v_invariant_checks` 里任何一条 `actual > 0` 即为数据违规，
    `db/verify.sql` 必须全绿才能提交。
 3. **DDL 只增不改，而且由机制保证。** 物理模型的唯一来源是 `db/migrations/NNN_*.sql`。
@@ -60,8 +62,8 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
     （两腿取较晚的那一天，留痕日期能独立复算出同一个因子）。
     同币种不折算 → 因子 1、快照日期 NULL。留一个假日期等于声称用过这份汇率，对账会查无此账。
 17. **状态机由机制保证，不靠自觉。** 合法流转写在 `state_transition` 表里（唯一来源），
-    触发器 `fn_guard_state_transition` 挡住非法流转，触发器 `fn_emit_state_event`
-    保证状态一变就落一条领域事件到 `event_outbox`。
+    函数 `fn_guard_state_transition`（挂在 `trg_*_status_guard` 上，挡住非法流转）
+    与 `fn_emit_state_event`（挂在 `trg_*_status_event` 上，保证状态一变就落一条领域事件到 `event_outbox`）。
     改状态机 = 改那张表 + 同步 `SPEC.md` §5，不是去改某个 Go 分支。
     不变量 46-49 守住「状态必须能从初始状态走到」。
 18. **下单有唯一实现。** 订单落库只走库里的 `fn_place_order()`（`db/migrations/004_place_order.sql`）：
@@ -340,6 +342,77 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
     - **留痕写进明细快照的 `reassignments`。** 下单时的定价快照是冻结的
       （它记的是当时报给客户的那个价），改派不改写历史，改派写自己的留痕。
       重复改派不产生第二笔留痕。
+34. **源侧的售卖份数区间有唯一实现。** `supplier_price_calendar` 上那对整数
+    `min_qty` / `max_qty` 是源侧的一手事实（最少成团人数、单笔上限），
+    唯一读法是库里的 `fn_source_quantity_limits()`，唯一判定是
+    `fn_qty_servable()`（`db/migrations/025_source_quantity_limits.sql`），
+    落单与改派都守它（`fn_place_order` / `fn_reassign_order_item`）。
+    七条口径写死：
+    - **读不到 = 源侧没给约束 = 不拦。** 不猜、不拿别的源的行顶上。
+    - **份数的单位 = 源侧的售卖单位**，也就是我们发给源侧的那条预订里的份数：
+      单张·按人 = 份（票）、单张·按团 = 人（团人数）、套装 = 套、
+      配方 = 该源 SKU 的份数。按团报价的团总价只在人数达标时成立 ——
+      1 个人不能按团价成交。
+    - **同一个源 SKU 顶多个成分时，比的是这个 SKU 的总份数。**
+      参数化源里成人与儿童是同一个 SKU，源侧收到的是一条预订里的总份数
+      （2 份成人 + 1 份儿童 = 3 份）。按成分各判各的会漏掉「合起来超上限」。
+    - **接不住就当场报错说清差在哪**（源、日期、区间、这一单的份数）。
+      不拦下来就是收了钱出不了票。
+    - **我们不按份数换源。** 换了源就是另一个价，而售价行没有份数维度 ——
+      要按份数换源得给价格加阶梯，是另一个增量。
+    - **改派也守这条**：新源接不住这一单的份数 → 拒绝改派。
+    - **区间记进明细快照的 `quantity_limits`**（源侧后来改了他的成团人数，
+      我们这边记的是当时那一版）。
+35. **按团报价的单位价口径有唯一实现。** 按团报价的源价行给的是**团总价 / 团成本**
+    （整团 1200 / 1100），明细里记的单位价与单位成本是**分摊到人**的
+    （171.43 / 157.14）。唯一实现是库里的 `fn_unit_amount(basis, total, quantity)`
+    （`db/migrations/026_reassign_candidates_cost_basis.sql`），
+    落单、改派、待改派清单三条路都调它。
+    四条口径写死：
+    - **总价 → 单位价只有一个实现。** `fn_unit_amount` 是它唯一的位置。
+      下单（`fn_place_order`）、改派（`fn_reassign_order_item`）、
+      待改派清单（`v_reassign_candidates`）都调它，不各写一遍 CASE。
+    - **按团报价的人均只是分摊，不是价。** 团总价与人数不成正比，
+      人均那一份不许拿去和按人计价的单价比。
+    - **明细里记的是分摊后的数。** 团总价与团成本留在快照里
+      （`detail_snapshot->'group_total'` / `->'cost_price'`）——
+      对账时看的是当时的团价，不是今天的。
+    - **清单与写路径必须同口径。** 清单说「成本变了」，
+      按人均口径算也必须真的变了（不变量 118）。
+      原来清单比成本时直接拿团成本和人均成本比（1100 ≠ 157.14），
+      每一条按团报价的未收款明细都被误报成「成本变了」，
+      而真去改派写路径自己返回 `no_change` —— 清单说的与写路径做的不一样，
+      清单就不可信。
+36. **预占的默认 TTL 住在库里，不住在调用方。** `fn_hold_inventory` 的 `p_ttl_seconds`
+    省略或传 `NULL` 都归一成 **900 秒**（`db/migrations/027_hold_ttl_default.sql`）。
+    三条口径写死：
+    - **默认值写在调用方 = 每多一个调用方就多一份默认值。** 库里只有一个 900，
+      调多少次都是同一个 900。
+    - **PostgreSQL 的 `DEFAULT` 不是归一。** `DEFAULT` 只在**省略实参**时生效；
+      显式传 `NULL` 拿到的是 `NULL`。凡是「参数可以不给」的函数，
+      归一都得在函数体里显式写（`COALESCE(p_ttl_seconds, 900)`）。
+    - **预占必须有确定的到期时间。** `expires_at` 不许是 `NULL`
+      （不变量 119）—— NULL 的预占**永远不过期**，`fn_expire_holds` 认不出来，
+      那个坑一直被占着，可售数一直少一张，是个不会释放的库存占用。
+37. **推导出来的数不许手抄。** 有些数是**数出来的**（不变量有几条、测试有几个、
+    mock 有几项断言、种子有几行）。这类数手抄进文档就会有两处：
+    抄的那天是对的，加了一天条目的那天就有一处是旧的 —— 而「规格说 118、库里有 119」
+    正是最费时间的一种不一致（读者先信文档、再跑出另一个数，然后开始怀疑整个仓库）。
+    - **数只数一次。** `scripts/counts.sh`（+ `scripts/counts.sql`）从各自的源头数：
+      不变量条数来自库里的 `v_invariant_checks`，分组来自 `pg_get_viewdef` 抠出的
+      UNION ALL 分支，库对象数来自 `pg_class` / `pg_indexes` / `pg_trigger` /
+      `pg_constraint`（各按它的口径，换口径就换了数），种子行数来自 `db/seed.sql`
+      **自己的统计段**（种子灌了哪些表由种子自己说，脚本不另抄一份），
+      测试条数来自 `*_test.go` 里的 `func Test*`，mock 断言数来自
+      `tc-connect mock` 的输出。跑 `make counts`。
+    - **文档只引用，不抄。** README / AGENTS.md / docs/ 里写「见 `make counts`」，
+      不再贴一个会过期的数字。SPEC.md §4 保留一份快照（合同需要自足），
+      但那份也注明「以视图定义为准」，加条时改这一处。
+    - **标签不许含糊。** 「14 日历格子」这种写法有两个日历表能对上（`c_product_calendar`
+      是 9 行、`c_variant_calendar` 是 14 行），读的人得自己猜指的是哪张 ——
+      标签里带上表名。
+    - **按编号定位的门禁不许写在文档里。** 不变量会重排（`seq` 重新编号），
+      按序号点名的文档立刻指向别的门禁。按 `check_name` 定位（它跨重排稳定）。
 
 ## 目录
 
@@ -350,7 +423,7 @@ docs/c-end-model.md           C 端：读模型、展示内容、购买漏斗
 docs/schema-design.md         物理模型：选型论证、表清单、索引策略、演进路线
 docs/connector-contract.md    供应源接入端口契约 + 七源差异矩阵 + §9 接入层实现现状
 docs/integrations.md          接入层（Go）：包结构、设计纪律、CLI 用法
-db/migrations/                全部 DDL（77 业务表 + 1 迁移账本 / 58 视图 / 227 索引 / 39 触发器 / 126 函数）
+db/migrations/                全部 DDL（表 / 视图 / 索引 / 触发器 / 函数 的条数见 `make counts`）
 db/migrations/001_baseline.sql 建库基线（冻结，不许改）；后续结构变更走新增的 NNN_*.sql
 db/migrations/002_*.sql        读模型刷新作业（fn_refresh_read_models）—— 迁移机制的第一个真实用例
 db/migrations/003_*.sql        交易侧状态机（state_transition + 守卫/事件触发器）
@@ -375,8 +448,11 @@ db/migrations/021_*.sql        三种供给形态对照（v_variant_supply_forms
 db/migrations/022_*.sql        供给形态不许因为源 SKU 下架而缩小（成分行留着只是没价 + 形态不许消失 + 缺口说清）
 db/migrations/023_*.sql        可履约源数一个口径（fn_variant_supply_source_count）—— 配方与套装的日历不再写 0
 db/migrations/024_*.sql        改派写路径（fn_reassign_order_item）—— 换源重定价，成分行与库存预占跟着走
-db/seed.sql                   种子数据（7 源 / 7 规范商品 / 29 映射 / 14 场次源绑定 / 10 订单 / 9 读模型卡片 / 21 变体（含 2 张套餐 + 1 张套装）/ 26 源变体 / 6 组合成分行 / 2 套装成分行；售价金额由定价函数生成）
-db/verify.sql                 验收查询（21 组视图 + 112 条不变量断言）
+db/migrations/025_*.sql        源侧的售卖份数区间（fn_source_quantity_limits / fn_qty_servable）—— 落单与改派都守成团人数与单笔上限
+db/migrations/026_*.sql        按团报价的单位价口径（fn_unit_amount）—— 总价 → 单位价只有一个实现，写路径与待改派清单同口径
+db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory 归一 NULL → 900 秒）—— 默认值住在库里，不住在调用方
+db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）
+db/verify.sql                 验收查询（46 组视图查询 + 不变量断言，条数见 make counts）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
 cmd/tc-api/                  C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历；只读读模型，只服务在营的自营 C 端渠道）
 internal/
@@ -406,13 +482,16 @@ internal/
   coverage/                   覆盖语义读侧：源变体覆盖住哪些可售单元（判定走库里的 fn_variant_covered）
   compose/                    组合映射写侧：组合表达式 → 配方（核组件、核数量；覆盖判定走库里的 fn_variant_covered）
   mock/                       Trip.com 分销侧协议 mock（标准库 net/http）
+  idgen/                      业务 ID 生成（订单号 / 幂等键 / 凭证号等）
+  testdb/                     测试用临时库（建库 / 迁移 / 种子 / 清理）
 configs/api_config.json       传输层配置：端点 / 21 接口 ICODE / 凭证口径 / 错误码映射
 configs/mapping_rules.json    映射规则配置（演练器与接入层共用）
 fixtures/                     真实报文结构的样例（canonical / trip_com / globaltix）
 scripts/mapping_dryrun.py     无凭证集成演练（源报文 → 归一化 → 路由 → 报告）
 scripts/order_demo.py         下单链路端到端演示（自己找有售价的日期，不写死日期）
 scripts/poc_page.py           前端 POC 渲染器
-Makefile                      build / test / mock / layers / dryrun / db / check / order-demo
+scripts/counts.sh + counts.sql 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
+Makefile                      build / test / mock / layers / dryrun / db / check / order-demo / counts
 ```
 
 ## 常用命令
@@ -455,7 +534,7 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 演练器通过 `tc-connect normalize` 消费它的输出：
 
 ```bash
-make dryrun                                  # 演练 + 终端报告（112 条不变量自检）
+make dryrun                                  # 演练 + 终端报告（不变量自检）
 python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 生成前端 POC
 ```
 
@@ -463,8 +542,9 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 生成前端
 
 ```bash
 make build                          # 构建 bin/tc-connect
-make test                           # 单元测试（26 个包）
-make mock                           # 协议级自检（本地 mock，14 项断言）
+make test                           # 单元测试
+make mock                           # 协议级自检（本地 mock）
+make counts                         # 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
 make layers                         # 分层连通性测试（连通→认证→目录→详情→价格→映射→路由）
 make check                          # 提交前完整自检（vet + test + mock + 演练器）
 make migrate                        # 应用待应用的迁移（存量库升级用这个，别重建）
@@ -476,15 +556,19 @@ make order-demo                     # 下单链路端到端演示（下单 → �
 ./bin/tc-connect redeem scan  --db ticket_center --code TKT-001  # 扫一次票
 ./bin/tc-connect redeem show  --db ticket_center --voucher 3    # 查这张券和它的核销流水
 ./bin/tc-connect stock show  --db ticket_center --supplier-session 1   # 查这个源场次还剩多少
-./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 --qty 2 --date 2026-11-18
+./bin/tc-connect variant feed    --db ticket_center --channel 1   # 看 C 端读模型里的变体行（顺带看哪天有售价）
+./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 --qty 2 --date <日期>
 ./bin/tc-connect hold expire --db ticket_center            # 跑 TTL 过期作业
 ./bin/tc-connect variant compare --db ticket_center --product 6   # 看这个商品的可售单元差在哪
 ./bin/tc-connect variant coverage --db ticket_center --variant 14 # 看哪些源能供、缺什么
-./bin/tc-connect variant feed    --db ticket_center --channel 1   # 看 C 端读模型里的变体行
 ./bin/tc-connect variant bundle  --db ticket_center --variant 21   # 看套装（源侧把整套当一个 SKU 卖）由谁组成
 ./bin/tc-connect variant supply  --db ticket_center --variant 18   # 看单张 / 配方 / 套装三种供给形态的对照
 ./bin/tc-connect compose plan    --db ticket_center --source globaltix --fixture fixtures/globaltix_catalog.json   # 组合配方能不能解出来
 ```
+
+`<日期>` 要**现查现用**：种子里所有日期是 `current_date + N`（`db/seed.sql`），
+写死的绝对日期会随灌库那天烂掉 —— 文档里的示例日期不等于运行时的日期。
+`hold create` 不带 `--ttl` 用默认 900 秒（不变量 119）。
 
 拿到凭证后（**凭证只从环境变量读，不入库、不进仓库、不进日志**）：
 
@@ -514,7 +598,7 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] `tc-connect migrate --status` 里没有「内容漂移」
 - [ ] `db/seed.sql` 完整装载
 - [ ] `db/verify.sql` 全部视图正常输出
-- [ ] `v_invariant_checks` 112 条全 PASS（`db/verify.sql` 的 F 段会 `RAISE EXCEPTION`）
+- [ ] `v_invariant_checks` 全 PASS（`db/verify.sql` 的 F 段会 `RAISE EXCEPTION`；条数见 `make counts`）
 - [ ] 改动状态机 → `state_transition` 表 + `SPEC.md` §5 同步更新，且非法流转仍被触发器挡住
 - [ ] 改动下单口径 → `fn_place_order` + `SPEC.md` §5.5 同步更新，且幂等与实名校验仍生效
 - [ ] 改动履约口径 → `005/006` 迁移 + `SPEC.md` §5.6 同步更新，且幂等、重复收款、票码张数、源场次绑定仍生效
@@ -535,9 +619,13 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] 改动成分/套装解析的口径 → `022` 迁移 + `SPEC.md` §4.21 / §5.17 同步更新，且「源下架时成分行仍在只是没价、形态仍出现在对照视图里、缺口说清、源下架时定价函数不给价」仍生效
 - [ ] 改动可履约源数的口径 → `023` 迁移 + `SPEC.md` §4.22 / §5.19 同步更新，且「源数不是成分数、不是价格行数、单张按路由算、日历 source_count 与对照视图 supplier_count 不混」仍生效
 - [ ] 改动改派的口径 → `024` 迁移 + `SPEC.md` §4.23 / §5.20 同步更新，且「改派 = 重新选源 + 重新定价、只发生在未收款未预订的单张形态上、成分行与库存预占跟着源走、留痕写进明细快照」仍生效
+- [ ] 改动份数区间的口径 → `025` 迁移 + `SPEC.md` §4.24 / §5.21 同步更新，且「区间唯一读法、份数的单位 = 源侧售卖单位、同源 SKU 按总份数判、接不住当场报错、不按份数换源、改派也守这条、区间进明细快照」仍生效
+- [ ] 改动按团单位价的口径 → `026` 迁移 + `SPEC.md` §4.25 / §5.22 同步更新，且「总价 → 单位价只有一个实现、按团的人均只是分摊不是价、明细里记的是分摊后的数、清单与写路径同口径」仍生效
+- [ ] 改动预占默认 TTL 的口径 → `027` 迁移 + `SPEC.md` §4.26 / §5.23 同步更新，且「默认值住在库里、不指定与指定 900 落同一张预占、预占必须有确定的到期时间」仍生效
 - [ ] `make test` 全绿（Go 单元测试）
-- [ ] `make mock` 协议自检 14/14 全 PASS
-- [ ] `python3 scripts/mapping_dryrun.py` 演练库 112/112 全 PASS
+- [ ] `make mock` 协议自检全 PASS
+- [ ] `python3 scripts/mapping_dryrun.py` 演练库不变量全 PASS
+- [ ] `make counts` 的数与文档里写的数一致（文档只引用，不自己抄）
 - [ ] `SPEC.md` 变更记录追加一行
 - [ ] `docs/schema-design.md` 的表清单/索引统计数字同步更新
 - [ ] `docs/ddd.md` 若涉及聚合边界或状态机，同步更新

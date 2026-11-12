@@ -17,7 +17,7 @@
 //	tc-connect layers --offline
 //	tc-connect mock
 //	tc-connect normalize --source trip_com --fixture fixtures/trip_com_catalog.json
-//	tc-connect price --variant 11 --date 2026-11-18
+//	tc-connect price --variant 11 --date <日期>
 //	tc-connect price --reprice
 package main
 
