@@ -79,7 +79,8 @@ dbcheck: build
 	                     -c "CREATE DATABASE $(CIBASE);"
 	@./$(BIN) migrate --db $(CIBASE)
 	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 -f db/seed.sql > /dev/null
-	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 -f db/verify.sql > /dev/null
+	@$(PSQL) -h $(PGHOST) -d $(CIBASE) -v ON_ERROR_STOP=1 \
+	         -v TC_VERIFY_SQL="$(CURDIR)/db/verify.sql" -f db/verify.sql > /dev/null
 	@echo "门禁通过：$(CIBASE) 的不变量全绿（条数见 make counts）"
 
 # 应用待应用的迁移（存量库用这个，不要重建）

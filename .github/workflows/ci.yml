@@ -34,9 +34,17 @@ jobs:
           go-version: "1.23"
 
       # check = vet + test-strict + build + mock + dbcheck + dryrun
-      # dbcheck 在一次性库里跑 迁移 → seed → verify.sql，107 条不变量必须全绿
+      # dbcheck 在一次性库里跑 迁移 → seed → verify.sql，不变量必须全绿。
+      # 不变量的条数是推导出来的（数视图有几条），不写在这里 ——
+      # 写死就是第二份口径，改的时候要改两处，而且改漏一处没人知道。
+      # 条数由下面「推导出来的数」这一步当场断言。
       - name: 提交前自检
         run: make check
+
+      # 推导出来的数当场对一次：把 counts 的输出跟 verify.sql 的实际结果比。
+      # 文档里贴的条数、CI 注释里的条数、库里的实际条数，三处必须一致。
+      - name: 推导出来的数
+        run: make counts
 
       - name: 单元测试（带覆盖率）
         run: go test ./... -timeout 180s -coverprofile=coverage.out -covermode=atomic

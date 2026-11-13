@@ -740,6 +740,158 @@ END $$;
 ROLLBACK;
 
 \echo ''
+\echo '════════════════════════ L1. 变体差异对照（v_variant_comparison） ════════════════════════'
+-- 期望：差异事实带着来源与有效期一起来；组合变体带 composition（成分清单），
+--       普通变体的 composition 为空 —— 差异不许在请求链路里 join 主数据算出来
+SELECT variant_code, variant_role, variant_status, product_code, audience,
+       valid_days, single_use, refundable, refund_fee_percent, refund_cutoff_hours,
+       duration_minutes, age_limit_min, source_count, fulfilable_source_count,
+       suppliers, is_combo, component_count,
+       (composition IS NOT NULL AND composition <> '{}'::jsonb) AS has_composition
+FROM v_variant_comparison
+ORDER BY product_code, variant_code;
+
+\echo ''
+\echo '════════════════════════ L2. 有效期窗口（v_variant_validity） ════════════════════════'
+-- 期望：每个可售单元每个场次都有一行，valid_to = session_date + valid_days；
+--       两日票的窗口比单日票长一天 —— 前端不许自己加一天（硬约束 23）
+SELECT variant_code, variant_title, session_date, valid_from, valid_to, valid_days, session_status,
+       (valid_to = valid_from + valid_days) AS window_ok
+FROM v_variant_validity
+ORDER BY variant_code, session_date;
+
+\echo ''
+\echo '════════════════════════ L3. 配方构成（v_variant_composition） ════════════════════════'
+-- 期望：每个配方成分都记着「这个源 SKU 顶的是哪个规范成分」（component_variant_id），
+--       以及源侧给的份数与我们声明的份数；两侧对账逐行比
+SELECT variant_key, variant_role, component_variant_key, component_variant_title,
+       supplier_code, external_variant_id, source_quantity, declared_quantity,
+       (source_quantity = declared_quantity) AS qty_ok
+FROM v_variant_composition
+ORDER BY variant_key, component_variant_key;
+
+\echo ''
+\echo '════════════════════════ L4. C 端组合构成读模型（v_c_variant_composition） ══════════════'
+-- 期望：每个组合的每个成分都带着份数、人群编码与天数；
+--       「2 成人 + 1 儿童」这句话由前端按 locale 拼（硬约束 9、27）
+SELECT channel_id, variant_key, variant_code, title, sequence, component_variant_id,
+       quantity, audience_code, valid_days
+FROM v_c_variant_composition
+ORDER BY channel_id, variant_key, sequence;
+
+\echo ''
+\echo '════════════════════════ L5. 配方缺口诊断（v_combo_price_gap） ══════════════════════════'
+-- 期望：卖得掉的组合不报缺口（能供的时候不许报缺口，硬约束 30）；
+--       卖不掉的要说清卡在哪：缺价 / 不在同一场次 / 跨源 / 锁价 / 按团报价
+SELECT combo_variant_id, combo_variant_key, channel_id, date, gap,
+       component_variant_key, quantity
+FROM v_combo_price_gap
+ORDER BY combo_variant_key, date, component_variant_key;
+
+\echo ''
+\echo '════════════════════════ L6. 套装声明（v_variant_bundle） ══════════════════════════════'
+-- 期望：套装声明的成分、份数与有效期；covers_window=t 表示有效期盖住了成分窗口的并集；
+--       admissions_per_set 是入场份数（不是套数）
+SELECT variant_code, variant_key, supplier_code, source_set_sku, source_set_title,
+       set_valid_days, union_days, covers_window, part_count, admissions_per_set,
+       gap_days, parts, gap_reasons
+FROM v_variant_bundle
+ORDER BY variant_key;
+
+\echo ''
+\echo '════════════════════════ L7. 套装成分（v_variant_bundle_part） ════════════════════════════'
+-- 期望：每个套装成分都带着份数、人群编码与自己的天数
+SELECT product_variant_id, supplier_variant_id, bundle_id, part_id, component_variant_id,
+       variant_code, title, quantity, audience_code, valid_days
+FROM v_variant_bundle_part
+ORDER BY product_variant_id, part_id;
+
+\echo ''
+\echo '════════════════════════ L8. 明细的采纳源（v_order_item_source） ══════════════════════════'
+-- 期望：履约真正用的源在 sales_order_item_source 这一行上（不是明细上的那个字段）；
+--       普通明细也写一行（履约代码只有一条路），组合与套装的成分各占一行
+SELECT order_item_id, order_no, order_status, product_id, variant_key, variant_role,
+       component_variant_key, supplier_code, external_variant_id,
+       quantity, admission_quantity, unit_cost, currency, fx_rate, fx_as_of,
+       booking_id, booking_no, booking_status, issued_vouchers
+FROM v_order_item_source
+ORDER BY order_item_id, component_variant_key;
+
+\echo ''
+\echo '════════════════════════ L9. 到期却还停在 issued 的凭证（v_voucher_expiry_overdue） ═════'
+-- 期望：作业跑完就会是 0；不为 0 说明凭证过期作业漏跑了。
+--       这是运行状态，不是数据违规 —— 它不挡住门禁（硬约束 38「看得见但不挡门禁」）
+SELECT overdue_count, oldest_valid_to, newest_valid_to, affected_orders
+FROM v_voucher_expiry_overdue;
+
+\echo ''
+\echo '════════════════════════ L10. 每个业务视图都要被验收查询摸到 ═════════════════════════════'
+-- 为什么有这一节：一个视图的定义烂掉了，验收查询不碰它，门禁就照样绿 ——
+-- 而那个视图往往是某条硬约束的读侧（约束 23 / 24 / 26 / 38 都是）。
+-- 所以这里反过来查一遍：库里每个业务视图，都必须至少被 verify.sql 摸过一次。
+-- 新加视图而忘了在这里登记，这一节就报错。
+--
+-- 怎么读自己的源码：pg_read_file 跑在服务端，读的是**服务端**的路径，
+-- 不是 psql 客户端的当前目录 —— 所以路径由客户端用 -v 传进来，
+-- 再经 set_config 交给 DO 块（psql 的变量替换在 $$ 引号里不生效，
+-- 直接写 :'VAR' 会被原样送进服务端当成语法）。
+-- 没传就跳过这一节（不报错）：手跑 psql -f db/verify.sql 时路径可能对不上，
+-- 而「因为路径不对就红」比「不查这一项」更坏 —— 那是一道假红。
+-- psql 的 \if 在 \else 分支里不送 SQL，所以「没传」这条路是干净跳过的。
+--
+-- 两个 psql 的坑（写这节时踩过，记在这里免得再踩）：
+--  1. 变量替换在 $$ 引号里不生效 —— :'VAR' 会被原样送进服务端当成语法，
+--     所以值要先用 set_config 交出去（单引号上下文，替换生效）。
+--  2. DO 块的收尾必须写 $$;（带分号）。只写 $$ 的话 psql 认为语句没结束，
+--     会把后面一段 DO 一起吞进去，发出去的语句里就出现了两个 DO，
+--     报出来的是「syntax error at or near DO」—— 错处不在出错的那一行。
+\if :{?TC_VERIFY_SQL}
+SELECT set_config('tc.verify_sql_path', :'TC_VERIFY_SQL', false);
+DO $$
+DECLARE
+  v_missing text := '';
+  v_seen   int;
+  v_path   text;
+  r        record;
+BEGIN
+  v_path := current_setting('tc.verify_sql_path', true);
+  IF v_path IS NULL OR v_path = '' THEN
+    RAISE NOTICE '（跳过视图覆盖检查：没有传 TC_VERIFY_SQL 变量，make dbcheck 会传）';
+    RETURN;
+  END IF;
+
+  FOR r IN
+    SELECT c.relname
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relkind = 'v'
+       AND c.relname NOT LIKE 'v_invariant_checks%'
+  LOOP
+    -- verify.sql 的源码里有这个视图名吗？
+    IF NOT EXISTS (
+      SELECT 1
+        FROM regexp_matches(pg_read_file(v_path), r.relname, 'g')
+    ) THEN
+      v_missing := v_missing || r.relname || ' ';
+    END IF;
+  END LOOP;
+
+  SELECT count(*) INTO v_seen
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'public' AND c.relkind = 'v'
+     AND c.relname NOT LIKE 'v_invariant_checks%';
+
+  IF v_missing <> '' THEN
+    RAISE EXCEPTION '这些业务视图没被验收查询覆盖：%', v_missing;
+  END IF;
+  RAISE NOTICE '视图覆盖检查：% 个业务视图全部被验收查询摸到', v_seen;
+END
+$$;
+\else
+\echo '（跳过视图覆盖检查：没有传 TC_VERIFY_SQL 变量，make dbcheck 会传）'
+\endif
+
+\echo ''
 \echo '════════════════════════ J. 序列对齐（应用第一次 INSERT 会不会撞主键） ═════════════════════'
 -- 种子数据用了显式 id，identity 序列必须同步推进。
 -- 序列停在 max(id) 之前时，应用第一次 INSERT 就报 duplicate key —— 这是「设计正确但跑不起来」的典型。
