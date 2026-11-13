@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ticket-center/internal/store"
 	"ticket-center/internal/variant"
 )
 
@@ -149,7 +150,9 @@ func (s *Server) handleProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	where := fmt.Sprintf("c.channel_id = %d AND c.locale = '%s' AND c.status <> 'offline'", channel, loc)
+	where := store.NewSQL("c.channel_id = ").Bind(channel).
+		And("c.locale = ").Bind(loc).
+		And("c.status <> 'offline'").MustString()
 	totalRaw, err := s.db.Scalar(fmt.Sprintf("SELECT count(*) FROM c_product_card c WHERE %s", where))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", "读卡片总数失败："+err.Error())
@@ -353,13 +356,15 @@ func (s *Server) handleCalendar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	where := fmt.Sprintf("channel_id = %d AND product_variant_id = %d", channel, variantID)
+	where := store.NewSQL("channel_id = ").Bind(channel).
+		And("product_variant_id = ").Bind(variantID)
 	if from != "" {
-		where += fmt.Sprintf(" AND date >= DATE '%s'", from)
+		where.And("date >= DATE ").Bind(from)
 	}
 	if to != "" {
-		where += fmt.Sprintf(" AND date <= DATE '%s'", to)
+		where.And("date <= DATE ").Bind(to)
 	}
+	whereSQL := where.MustString()
 	sql := `SELECT date::text AS date,
 	               COALESCE(price_min::text, '') AS price_min,
 	               COALESCE(price_max::text, '') AS price_max,
@@ -367,7 +372,7 @@ func (s *Server) handleCalendar(w http.ResponseWriter, r *http.Request) {
 	               source_count AS source_count,
 	               COALESCE(valid_to::text, '') AS valid_to,
 	               synced_at::text AS synced_at
-	          FROM c_variant_calendar WHERE ` + where + ` ORDER BY date`
+	          FROM c_variant_calendar WHERE ` + whereSQL + ` ORDER BY date`
 
 	rows, err := s.db.Rows(sql)
 	if err != nil {

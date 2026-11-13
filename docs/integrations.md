@@ -34,7 +34,7 @@ internal/
   config/                    传输层配置（端点 / ICODE / 错误码映射）
   normalize/                 归一化核心（配置驱动，无按源分支）
   pricing/                   定价入口（读 fn_price_variant 的结果，**不算钱**）
-  store/                     DB 访问（psql 子进程）+ 报文归档 + 幂等
+  store/                     DB 访问（psql 子进程）+ 报文归档 + 幂等 + 值进 SQL 的转义机制
   supplier/                  端口定义与公共基类
     tripcom/                 Trip.com 分销侧适配器
     globaltix/               GlobalTix Supply API 适配器（端点待商务确认）
@@ -53,6 +53,7 @@ internal/
   variant/                   异构差异读侧：对照表 / 源覆盖缺口 / C 端读视图 + 组合构成（只读视图，不重算有效天数与覆盖判定）
   compose/                   组合映射写侧：组合表达式 → 配方（核组件、核数量；覆盖判定走库里的 fn_variant_covered）
   mock/                      Trip.com 分销侧协议 mock（标准库 net/http）
+  sqllint/                   SQL 门禁：查「把没转义的值拼进 SQL」的地方
   capi/                      C 端只读 API：路由 / 参数校验 / 读模型查询（不 join 主数据、不重算事实）
   idgen/                     请求级 UUID（追踪位，**不是**幂等键）
 configs/                     api_config.json / mapping_rules.json（仓库根）
@@ -95,6 +96,21 @@ fixtures/                    真实报文结构的样例（仓库根）
     Go 侧只拼参数、只读结果。换源与重新定价都是库里那一份 ——
     Go 侧再排一次源、再算一次钱，就多了一份「今天该换到哪个源」的说法，
     而两份说法不一致的后果还是「按 A 源的价格卖、按 B 源出票」。
+11. **值进 SQL 要先转义，这道门禁不靠自觉。** psql 是子进程，没有 `$1` 占位符，
+    SQL 全是拼出来的。唯一的防线是「记得调 `store.Quote`」，而「记得」是约定不是机制 ——
+    约定迟早被漏掉一次，漏掉的那一次就是注入。两条路：
+    - 拼查询用 `store.NewSQL(...).Bind(v).And(...).MustString()`，
+      绑定时就转义，非标量直接报错（要走 jsonb 就用 `BindJSON`）。
+    - 拼字面量用 `store.Quote(v)`（字符串）或 `store.QuoteIdent(v)`（标识符）。
+    `make lint`（`internal/sqllint` + `cmd/tc-lint`）扫 AST，
+    把「值拼进 SQL 的引号位置且没转义」的地方报出来，门禁挂在 `make check` 与 CI 上。
+    门禁的判据宁放过不误伤：只盯带引号的位置（裸的数值位置不会被字符串内容打断），
+    包级常量与编译期字面量不算问题。
+
+    门禁会放过两种真问题，所以它是第一道不是唯一一道：`'%s'` 里插进来的值
+    没转义会闭合引号（门禁会报），但 `col = %s` 里插进来的值不带引号——
+    那是裸的数值位置，字符串内容不会打断它，可它同样不是转义过的字面量。
+    写查询时优先用 `store.NewSQL`，它不给你留这个口子。
 
 ---
 

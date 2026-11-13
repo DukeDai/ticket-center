@@ -3,7 +3,8 @@
 # 常用：
 #   make build     构建 tc-connect
 #   make test      跑单元测试
-#   make check     vet + test + 协议自检 + 演练器（提交前跑这个）
+#   make check     vet + test + 协议自检 + 演练器 + SQL 门禁（提交前跑这个）
+#   make lint      SQL 门禁：查「把没转义的值拼进 SQL」的地方
 #   make mock      协议级自检（本地 mock，14 项断言）
 #   make layers    分层连通性测试（真实端点）
 #   make dryrun    无凭证集成演练（建演练库 + 不变量自检，条数见 make counts）
@@ -28,7 +29,7 @@ API_ADDR ?= :8080
 
 export PATH := /usr/local/go/bin:$(PATH)
 
-.PHONY: all build test vet fmt check mock layers dryrun poc db verify sources clean migrate dbstatus dbcheck refresh jobs order-demo api counts
+.PHONY: all build test vet fmt check mock layers dryrun poc db verify sources clean migrate dbstatus dbcheck refresh jobs order-demo api counts lint
 
 all: build
 
@@ -54,7 +55,18 @@ fmt:
 
 # 提交前的完整自检
 # dbcheck 必须进 check：不变量是门禁，不是「有空跑一下」的报告（条数见 make counts）
-check: vet test-strict build mock dbcheck dryrun
+# lint 也必须进 check：「值进 SQL 要先转义」是约定，靠自觉迟早漏一次 ——
+# 漏掉的那一次就是注入。这道门禁把约定变成机制。
+check: vet test-strict build mock lint dbcheck dryrun
+
+# SQL 门禁：查「把没转义的值拼进 SQL」的地方。
+#
+# psql 是子进程，没有 $1 占位符，SQL 全是拼出来的 ——
+# 唯一的防线是「记得调 store.Quote」，而「记得」是约定不是机制。
+# 这个门禁扫 AST：值拼进 SQL 的引号位置（'%s'）且没经过
+# store.Quote / store.QuoteIdent，就报出来。
+lint:
+	$(GO) run ./cmd/tc-lint .
 
 mock: build
 	./$(BIN) mock

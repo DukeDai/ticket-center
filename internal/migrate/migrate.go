@@ -310,8 +310,8 @@ func buildScript(files []File, baselined []File) (string, error) {
 
 	for _, f := range baselined {
 		b.WriteString(fmt.Sprintf(
-			"INSERT INTO %s(version, name, checksum) VALUES ('%s', '%s', '%s') ON CONFLICT (version) DO NOTHING;\n",
-			LedgerTable, f.Version, f.Name, f.Checksum))
+			"INSERT INTO %s(version, name, checksum) VALUES (%s, %s, %s) ON CONFLICT (version) DO NOTHING;\n",
+			LedgerTable, store.Quote(f.Version), store.Quote(f.Name), store.Quote(f.Checksum)))
 	}
 
 	for _, f := range files {
@@ -324,7 +324,7 @@ func buildScript(files []File, baselined []File) (string, error) {
 		}
 		body := string(content)
 		b.WriteString("BEGIN;\n")
-		b.WriteString(fmt.Sprintf("SELECT count(*) AS __applied FROM %s WHERE version = '%s' \\gset\n", LedgerTable, f.Version))
+		b.WriteString(fmt.Sprintf("SELECT count(*) AS __applied FROM %s WHERE version = %s \\gset\n", LedgerTable, store.Quote(f.Version)))
 		b.WriteString("\\if :__applied\n")
 		b.WriteString(fmt.Sprintf("\\echo '· %s 已应用，跳过'\n", f.Label()))
 		b.WriteString("\\else\n")
@@ -334,9 +334,9 @@ func buildScript(files []File, baselined []File) (string, error) {
 			b.WriteString("\n")
 		}
 		b.WriteString(fmt.Sprintf(
-			"INSERT INTO %s(version, name, checksum, duration_ms) VALUES ('%s', '%s', '%s', "+
+			"INSERT INTO %s(version, name, checksum, duration_ms) VALUES (%s, %s, %s, "+
 				"round(EXTRACT(EPOCH FROM (clock_timestamp() - :'__t0'::timestamptz)) * 1000));\n",
-			LedgerTable, f.Version, f.Name, f.Checksum))
+			LedgerTable, store.Quote(f.Version), store.Quote(f.Name), store.Quote(f.Checksum)))
 		b.WriteString("\\endif\n")
 		b.WriteString("COMMIT;\n")
 	}

@@ -189,6 +189,12 @@ func PLError(err error) error {
 }
 
 // Quote 把值转成 SQL 字面量。
+//
+// 只认标量：nil / bool / 各种数值 / string。
+// 其它类型走 fallback（`fmt.Sprintf("%v")` + 转义）——
+// 对 int32 是对的，对 slice 不是：slice 会变成 `'[1 2 3]'`
+// 这样一个看着像字符串、语义完全不同的字面量。
+// 要绑定结构体请用 SQL.BindJSON。
 func Quote(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -200,8 +206,26 @@ func Quote(v any) string {
 		return "false"
 	case int:
 		return strconv.Itoa(t)
+	case int8:
+		return strconv.FormatInt(int64(t), 10)
+	case int16:
+		return strconv.FormatInt(int64(t), 10)
+	case int32:
+		return strconv.FormatInt(int64(t), 10)
 	case int64:
 		return strconv.FormatInt(t, 10)
+	case uint:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(t), 10)
+	case uint64:
+		return strconv.FormatUint(t, 10)
+	case float32:
+		return strconv.FormatFloat(float64(t), 'f', -1, 32)
 	case float64:
 		return strconv.FormatFloat(t, 'f', -1, 64)
 	case string:

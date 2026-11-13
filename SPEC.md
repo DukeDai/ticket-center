@@ -2265,6 +2265,43 @@ CLI：`tc-connect jobs [--db name] [--limit n]`。
 
 ---
 
+### 5.26 值进 SQL 的口径（2026-11-13 落地）
+
+**这件事是什么**：psql 是子进程，没有 `$1` 占位符，SQL 全是拼出来的。
+所以值进 SQL 的唯一防线是「记得调 `store.Quote`」—— 而「记得」是**约定不是机制**，
+约定迟早被漏掉一次，漏掉的那一次就是注入。一次注入就是一次数据泄露，
+而「记得转义」这件事在被赶工的时候是第一个被省掉的。
+
+**两条路**：
+
+| 位置 | 干什么 |
+|---|---|
+| `store.NewSQL(...).Bind(v).And(...).MustString()` | 拼查询：绑定时转义，调用方拿到的是已经转义好的字面量 |
+| `store.Quote(v)` / `store.QuoteIdent(v)` | 拼字面量：字符串字面量与标识符是两件事，不能混用 |
+| `internal/sqllint` + `cmd/tc-lint` | 门禁：扫 AST，把没转义的值报出来 |
+| `make lint` | 门禁入口（挂在 `make check` 与 CI 上） |
+
+**几条口径写死**：
+
+- **绑定时就转义。** 调用方拿到的是已经转义好的字面量，不给自己留「忘了再转一次」
+  的机会。
+- **非标量直接报错。** 绑 map / slice 这类值时返回错误并指路 `BindJSON`，
+  不许悄悄写个 `NULL` 糊过去 —— 糊过去的地方正是数据悄悄丢的地方。
+- **标识符不能走 `Quote`。** `QuoteIdent` 把它渲染成标识符，`Quote` 渲染成字符串
+  字面量 —— 表名与列名要用后者，这是两件事。
+- **门禁盯带引号的位置，放过裸数值位置。** `WHERE name = '%s'` 里插进来的值会闭合
+  引号，是真问题，门禁报；`WHERE id = %s` 里插进来的值不带引号，字符串内容打断不了
+  它 —— 但它同样不是转义过的字面量。门禁放过它是**判据宁放过不误伤**的取舍，
+  不是漏洞。写查询优先用 `store.NewSQL`，它不留这个口子。
+- **包级常量与编译期字面量不算问题。** 门禁噪音多了就没人看了。
+- **门禁是第一道不是唯一一道。** 它会放过裸数值位置，所以真正的防线是写查询时
+  走绑定机制。
+
+CI 上这条门禁与不变量门禁同级：漏掉一次转义就是一次数据泄露，
+让它在 `make check` 里失败比让人记住要可靠。
+
+---
+
 ## 6. 领域事件（Domain Events）
 
 | 事件 | 触发点 | 典型订阅方 |
@@ -2360,6 +2397,7 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 - [x] **C 端只读 API 落地**（§5.18）：`internal/capi` + `cmd/tc-api`，四个业务端点（浏览 / 变体差异 / 套餐构成 / 日历）加一个 `GET /healthz` 探活开成 HTTP 接口；请求链路只读读模型不 join 主数据、渠道必答、金额以字符串出、有效期终点由库算、参数不合法就报错
 - [x] **公开读接口只服务自营 C 端**（§5.18 第三条）：匿名接口没有调用方身份，边界画在渠道上 —— 只服务 `channel_type='b2c_own'` 且在营的渠道，B 端分销 / 企业客户 / 供应商直销一律 403，且渠道不存在与渠道不对外服务给同一个答复
 - [x] **可履约源数一个口径**（§5.19）：`fn_variant_supply_source_count` 是「有几个源能供这个可售单元（这一天、这个渠道）」的唯一实现，日历格子的 `source_count` 三种形态都算得对 —— 配方与套装不再写 0（0 的意思是「一个源都供不了」，而它们明明在卖）；不变量 108 守住它
+- [x] **值进 SQL 的转义从约定变成机制**（§5.26）：`internal/store` 提供 `NewSQL` / `Bind` / `BindAll` / `BindJSON` / `And` / `Or` / `Where`（绑定时转义，非标量直接报错并指路 `BindJSON`）与 `Quote`（字符串字面量）/ `QuoteIdent`（标识符）；`internal/sqllint` + `cmd/tc-lint` 扫 AST，把「值拼进 SQL 的引号位置且没经过转义」报出来，门禁挂在 `make check` 与 CI 上；`internal/capi/products.go` / `internal/migrate/migrate.go` / `internal/variant/variant.go` 三处改为走绑定机制。门禁盯带引号的位置、放过裸数值位置 —— 放过是判据宁放过不误伤的取舍，文档里写明了，真正的防线是写查询时走绑定机制
 - [ ] 各源真实适配器（下一阶段，按 `docs/connector-contract.md` 实施）
 - [ ] API / Web 端（读侧已落地，见 §5.18；还差 B 端管理台与 C 端购买链路的**写侧** —— 购物车 / 结算 / 下单 / 支付，以及它们依赖的调用方身份与鉴权）
 - [x] **改派写路径落地**（§5.20）：`fn_reassign_order_item`（`db/migrations/024_reassign_order_item.sql`）是唯一实现 —— 改派 = 重新选源 + 重新定价（源与价都取自 `fn_price_variant`），只发生在未收款、还没预订过的单张形态上；成分行与库存预占跟着源一起走（否则就是「按 A 源的价格卖、按 B 源出票」「按新源卖、按旧源占库存」），留痕写进明细快照的 `reassignments`；接入层 `internal/reassign` + `tc-connect order reassign|stale`；改派侧不变量 109-112 守住「留痕是链、明细没被手改、已收款不许改派、成分行与明细同源」
@@ -2375,6 +2413,7 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 
 | 日期 | 变更 | 影响 |
 |---|---|---|
+| 2026-11-13 | **值进 SQL 的转义从约定变成机制（§5.26）**：`internal/store` 新增 `NewSQL` / `Bind` / `BindAll` / `BindJSON` / `And` / `Or` / `Where`（绑定时转义，非标量直接报错并指路 `BindJSON`）与 `Quote`（字符串字面量）/ `QuoteIdent`（标识符）；新增 `internal/sqllint` + `cmd/tc-lint`（扫 AST，把「值拼进 SQL 的引号位置且没经过转义」报出来），门禁挂在 `make check` 与 CI 上；`internal/capi/products.go` / `internal/migrate/migrate.go` / `internal/variant/variant.go` 三处改为走绑定机制；`AGENTS.md` 硬约束 40 与 `docs/integrations.md` 第 11 条同步；**无迁移** | psql 是子进程，没有 `$1` 占位符，SQL 全是拼出来的 —— 唯一的防线是「记得调 `store.Quote`」，而「记得」是约定不是机制，约定迟早被漏掉一次，漏掉的那一次就是注入（一次注入就是一次数据泄露，而「记得转义」在被赶工的时候是第一个被省掉的）。取舍写在这里：**门禁盯带引号的位置**（`'%s'` 里插进来的值会闭合引号，是真问题），**放过裸数值位置**（`col = %s` 插进来的值不带引号，字符串内容打断不了它 —— 但它同样不是转义过的字面量，所以写查询优先用 `store.NewSQL`，它不留这个口子）；**包级常量与编译期字面量不算问题**（门禁噪音多了就没人看了，判据宁放过不误伤）。门禁会放过两种真问题，所以它是第一道不是唯一一道 —— 这是设计上的取舍，不是漏洞，文档里写明了 |
 | 2026-11-13 | **作业调度落地（§5.25）**：新增 `cmd/tc-connect/cmd_jobs.go`（`tc-connect jobs`）与 `make jobs`：一次跑完凭证过期（`fn_expire_vouchers`）/ 预占过期（`fn_expire_holds`）/ 组合同步（`fn_sync_combo_calendar`）/ 读模型刷新（`fn_refresh_read_models`），再读 `v_c_readmodel_drift` 与 `v_voucher_expiry_overdue` 做读侧自检；新增 §5.25 与 §7 验收项；**无迁移**（判据与作业本体全在库里，Go 侧只拼参数、只读结果） | 上一条落地了 `fn_expire_vouchers`，但**作业在库里没人调它** —— 判据、幂等、事件全对，只要没人跑，券的状态还是停在 `issued`，那个状态洞原样存在。补作业而不补调度，是把「没人跑」从「没人知道」变成「以为有人跑」。取舍写在这里：**一次跑完就退出**（不常驻、不自己排期 —— 常驻进程要处理信号、重启、漂移、跨库切换，那是调度器的活）；**间隔不写在代码里**（写死就成了第二份口径，改的时候要改两处，改漏一处没人知道），交给系统 cron 或 k8s CronJob；**失败非零退出**，重试交给调度器；**作业幂等**靠的是「`UPDATE ... WHERE status = 'issued'`」这个形状，不是靠调度器的自觉，限批（默认 500）是同一件事的另一半；**刷新后仍漂移非零退出**（读模型刚刷新过还对不上就是硬事实 —— 这条是**防御性断言**，刷新本身就是修复机制，手改出来的漂移会被修好，所以它是最后一道防线不是常规路径）；**到期却还停在 `issued` 只报告不失败**（那是运行状态不是数据违规，§5.24 的口径是「看得见但不挡门禁」—— 让它挡住调度，会把一条告警变成一个死循环） |
 | 2026-11-13 | **凭证过期作业落地（028）**：新增 `db/migrations/028_voucher_expiry.sql`：`fn_expire_vouchers(p_limit INTEGER DEFAULT 500)` 把 `valid_to` 已过的 `issued` 券推进到 `expired`（幂等、限批、按 `valid_to, id` 排序）；新增 `fn_delivered_voucher_statuses()`（`issued` / `used` / `expired` = 交付过），并把 `fn_apply_order_fulfillment` / `fn_reassign_order_item` / `fn_issue_voucher` 与诊断视图里散落的 `IN ('issued','used')` 改读这个谓词；不变量从 119 条扩到 121 条（120 过期券必须有有效期终点 / 121 过期券必须已出票）；新增 §4.27 与 §5.24；新增 `v_voucher_expiry_overdue`（作业漏跑看得见，但不挡门禁）；Go 侧 `internal/redemption` 加 `ExpireOverdue` / `ShowOverdue`，CLI 加 `tc-connect redeem expire` / `redeem overdue`；回归测试三条（推进 + 幂等 / 事件自动落 / 别的状态不动） | 008 的核销路径刻意**只落核销记录、不改券状态**（「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改」）—— 那句话当时是承诺，兑现它的那一半一直缺着。缺口不是「少一个功能」，是**一个看得见的状态洞**：券的有效期过了，券的状态还停在 `issued`，两个地方说的不是同一件事（券能被扫成「过期」，券本身还说「我还是有效的、还没用过」）。更要命的是**「交付过」的口径漏了 `expired`**：库里到处用 `status IN ('issued','used')` 表示「这张票给过客户」，而 `expired` 同样表示交付过 —— 不改的话，券一过期，订单的履约状态会从 `fulfilled` 翻成未履约、已出票的明细会变成可改派（一次交付两次出票）。取舍写在这里：**交付过 = `issued` / `used` / `expired`**（`void` / `refunded` 才是「没交付」或「收回」），用一个共享谓词 `fn_delivered_voucher_statuses()` 读，不在五处各写一遍 IN 列表（抄五遍的口径，迟早有一处漏）；**作业只 UPDATE 不自己插事件**（`trg_voucher_status_event` 自动落 `VoucherExpired`，手插事件就绕过了状态机）；**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态不是数据违规，堵在门禁里只会让作业跑不成；`v_voucher_expiry_overdue` 让它看得见）；**作业不碰订单状态**（`fulfillment_status` 是推导值，由 `fn_apply_order_fulfillment` 推导，作业去写它就是两份实现）。判据是**券自己的 `valid_to`**，不是订单日期、不是可售单元的承诺 —— 券的有效期窗口是发券时定下的事实 |
 | 2026-11-13 | **推导出来的数不许手抄（规整第二步·续）**：把 `scripts/counts.sh` 的覆盖面补全到「库对象数」（业务表 / 视图 / 索引 / 触发器 / CHECK 约束 / 序列 / 函数，各按它自己的口径：`pg_class` / `pg_indexes` / `pg_trigger NOT tgisinternal` / `pg_constraint` / `information_schema.routines`）与「种子行数」（表清单**从 `db/seed.sql` 自己的「-- 统计」段抽出来**，种子灌了哪些表由种子自己说，脚本不另抄一份）；`AGENTS.md` / `README.md` / `docs/schema-design.md` 里手抄的库对象数与种子行数改成「见 `make counts`」；硬约束 37 补一条「标签不许含糊」 | 上一条只把「不变量 / 测试 / mock 断言」三类数收到 `make counts` 后面，但**库对象数与种子行数还散在 AGENTS.md / README.md / docs/schema-design.md 三处手抄** —— 这一类数最脆：加一个迁移就多一个视图、改一次种子就多几行，读的人得自己算才知道文档是不是旧的。这一步抓出两处真漂移：① README 写「60 视图」，027 加过一个视图，实际是 **61**（文档少写了一个，人照着文档数就以为少了一个视图）；② 「14 日历格子」这个标签在 `c_product_calendar`（9 行）与 `c_variant_calendar`（14 行）之间**含糊** —— 它挨着的数字 9 指的是 `c_product_card`，标签却能被读成另一张表。取舍写在这里：**数只数一次，文档只引用不抄**（库对象数与种子行数一起进 `make counts`）；**标签不许含糊**（标签里带上表名，不让读的人猜）；**口径写在标签后面，别换口径**（触发器用 `pg_trigger NOT tgisinternal` 是 39，`information_schema.triggers` 是 46 —— 它按事件展开，换口径就换了数） |

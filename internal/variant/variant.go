@@ -486,7 +486,7 @@ func SupplyFormRows(db *store.DB, variantID int64, date string, channelID int64)
 		if err != nil {
 			return nil, fmt.Errorf("日期格式不对（要 YYYY-MM-DD）：%q", d)
 		}
-		where = append(where, fmt.Sprintf("date = DATE '%s'", parsed.Format("2006-01-02")))
+		where = append(where, store.NewSQL("date = DATE ").Bind(parsed.Format("2006-01-02")).MustString())
 	}
 	if channelID > 0 {
 		where = append(where, fmt.Sprintf("channel_id = %d", channelID))

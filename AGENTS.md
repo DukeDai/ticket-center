@@ -450,6 +450,24 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
       不是常规路径）；到期却还停在 `issued` = 运行状态，**只报告不失败**
       （硬约束 38 的「看得见但不挡门禁」—— 让它挡住调度，会把一条告警变成一个死循环）。
     另外：**这条命令不重算任何业务结论** —— 判据全在库里，Go 侧只拼参数、只读结果。
+40. **值进 SQL 要先转义，这道门禁不靠自觉。** psql 是子进程，没有 `$1` 占位符，
+    SQL 全是拼出来的。唯一的防线是「记得调 `store.Quote`」，而「记得」是约定不是机制 ——
+    约定迟早被漏掉一次，漏掉的那一次就是注入。四条口径写死：
+    - **拼查询走 `store.NewSQL(...).Bind(v).And(...).MustString()`。**
+      绑定时就转义，调用方拿到的是已经转义好的字面量；非标量直接报错并指路
+      `BindJSON`，不许悄悄写个 `NULL` 糊过去。
+    - **拼字面量走 `store.Quote`（字符串）或 `store.QuoteIdent`（标识符）。**
+      标识符不能走 `Quote`：`QuoteIdent` 会把它渲染成一个标识符，
+      而 `Quote` 渲染成字符串字面量 —— 表名与列名要用后者，这是两件事。
+    - **门禁挂在 `make check` 与 CI 上**（`internal/sqllint` + `cmd/tc-lint`）。
+      它扫 AST，把「值拼进 SQL 的引号位置（`'%s'`）且没经过转义」的地方报出来。
+      判据宁放过不误伤：只盯带引号的位置（裸的数值位置不会被字符串内容打断），
+      包级常量与编译期字面量不算问题 —— 门禁噪音多了就没人看了。
+    - **门禁放过裸数值位置是有意的，不是漏洞。** `col = %s` 插进来的值不带引号，
+      字符串内容不会闭合引号 —— 但它同样不是转义过的字面量。
+      写查询优先用 `store.NewSQL`，它不给这个口子留。
+    另外：**这条约束是机制不是风格** —— 一次注入就是一次数据泄露，
+    而「记得转义」这件事在被赶工的时候是第一个被省掉的。
 
 ## 目录
 
@@ -500,7 +518,7 @@ internal/
   config/                     传输层配置加载与校验
   normalize/                  归一化核心（配置驱动）—— 唯一实现
   pricing/                    定价入口（读 fn_price_variant 的结果，不算钱）
-  store/                      DB 访问（psql 子进程）+ 报文归档 + 幂等
+  store/                      DB 访问（psql 子进程）+ 报文归档 + 幂等 + 值进 SQL 的转义机制（NewSQL/Bind/Quote）
   supplier/tripcom/           Trip.com 分销侧适配器（21 接口全配置驱动）
   supplier/globaltix/         GlobalTix Supply API 适配器（端点待商务确认）
   supplier/pending/           其余五源的占位适配器（接口细节未核对）
@@ -522,6 +540,7 @@ internal/
   mock/                       Trip.com 分销侧协议 mock（标准库 net/http）
   idgen/                      业务 ID 生成（订单号 / 幂等键 / 凭证号等）
   testdb/                     测试用临时库（建库 / 迁移 / 种子 / 清理）
+  sqllint/                    SQL 门禁：查「把没转义的值拼进 SQL」的地方（cmd/tc-lint 是入口）
 configs/api_config.json       传输层配置：端点 / 21 接口 ICODE / 凭证口径 / 错误码映射
 configs/mapping_rules.json    映射规则配置（演练器与接入层共用）
 fixtures/                     真实报文结构的样例（canonical / trip_com / globaltix）
@@ -529,7 +548,7 @@ scripts/mapping_dryrun.py     无凭证集成演练（源报文 → 归一化 �
 scripts/order_demo.py         下单链路端到端演示（自己找有售价的日期，不写死日期）
 scripts/poc_page.py           前端 POC 渲染器
 scripts/counts.sh + counts.sql 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
-Makefile                      build / test / mock / layers / dryrun / db / check / order-demo / jobs / counts
+Makefile                      build / test / mock / layers / dryrun / db / check / lint / order-demo / jobs / counts
 ```
 
 ## 常用命令
@@ -584,7 +603,8 @@ make test                           # 单元测试
 make mock                           # 协议级自检（本地 mock）
 make counts                         # 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
 make layers                         # 分层连通性测试（连通→认证→目录→详情→价格→映射→路由）
-make check                          # 提交前完整自检（vet + test + mock + 演练器）
+make lint                           # SQL 门禁：查「把没转义的值拼进 SQL」的地方
+make check                          # 提交前完整自检（vet + test + mock + lint + 演练器）
 make migrate                        # 应用待应用的迁移（存量库升级用这个，别重建）
 make dbstatus                       # 看迁移状态（哪些已应用、哪些待应用）
 make refresh                        # 刷新 C 端读模型并查漂移
@@ -674,6 +694,7 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] 改动「交付过」的口径 → `fn_delivered_voucher_statuses()` 是唯一读法，且「expired 算交付过、void/refunded 不算、履约推导 / 改派守卫 / 出券判定三处口径一致」仍生效
 - [ ] `make test` 全绿（Go 单元测试）
 - [ ] `make mock` 协议自检全 PASS
+- [ ] `make lint` SQL 门禁通过（值进 SQL 都要先转义）
 - [ ] `python3 scripts/mapping_dryrun.py` 演练库不变量全 PASS
 - [ ] `make counts` 的数与文档里写的数一致（文档只引用，不自己抄）
 - [ ] `SPEC.md` 变更记录追加一行
