@@ -103,6 +103,7 @@ make test                           # 单元测试
 make mock                           # 协议级自检（本地 mock）
 make counts                         # 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
 make layers                         # 分层连通性测试（连通→认证→目录→详情→价格→映射→路由）
+make jobs                           # 跑一遍批处理作业（交给外部调度器按 cron 调，间隔不写在代码里）
 make check                          # 提交前完整自检（vet + test + mock + 演练器）
 ```
 
@@ -231,6 +232,7 @@ make order-demo                                       # 端到端演示：找有
 ./bin/tc-connect redeem show  --db ticket_center --voucher 3
 ./bin/tc-connect redeem overdue --db ticket_center              # 到期却还停在 issued 的券（过期作业漏跑）
 ./bin/tc-connect redeem expire  --db ticket_center              # 跑凭证过期作业（issued → expired）
+./bin/tc-connect jobs          --db ticket_center              # 跑一遍全部批处理作业（过期 / 预占 / 读模型）
 ./bin/tc-connect stock show  --db ticket_center --supplier-session 1
 ./bin/tc-connect variant feed    --db ticket_center --channel 1   # 先看哪一天有售价（下面 <日期> 从这里取）
 ./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 --qty 2 --date <日期>
@@ -242,6 +244,18 @@ make order-demo                                       # 端到端演示：找有
 
 `<日期>` 不是占位符的客气话 —— **种子里的日期是 `current_date + N`**（`db/seed.sql`），
 所以任何写死的绝对日期都会随灌库那天烂掉，`variant feed` 打印的才是当天真的有售价的日子。
+
+**批处理作业交给外部调度器按 cron 调**（间隔不写在代码里，写死就成了第二份口径）：
+
+```
+*/5 * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center
+```
+
+`tc-connect jobs` 是一次性命令，跑完就退出：它跑凭证过期（`fn_expire_vouchers`）、
+预占过期（`fn_expire_holds`）、组合同步（`fn_sync_combo_calendar`）与读模型刷新
+（`fn_refresh_read_models`），再读漂移与过期现状做读侧自检。失败非零退出让调度器重试；
+作业本身幂等（靠 `UPDATE ... WHERE status = 'issued'` 的形状，不靠调度器的自觉）。
+详见 [SPEC §5.25](SPEC.md#525-作业调度的口径)。
 演示脚本（`make order-demo`）也是自己找有售价的日期，不写死。
 
 `hold create` 不带 `--ttl` 时用默认 900 秒（不变量 119 守着「预占必须有确定的到期时间」）。
@@ -321,14 +335,14 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 | [`db/seed.sql`](db/seed.sql) | 种子数据 |
 | [`db/verify.sql`](db/verify.sql) | 验收查询 + 不变量断言 |
 | [`cmd/tc-api/`](cmd/tc-api/) | **C 端只读 API 服务**：浏览 / 变体差异 / 套餐构成 / 日历 |
-| [`cmd/tc-connect/`](cmd/tc-connect/) | **接入层 CLI**：`sources` / `layers` / `mock` / `normalize` / `compose` / `price` / `migrate` / `refresh` / `order` / `fulfill` / `refund` / `redeem` / `stock` / `hold` / `variant` |
+| [`cmd/tc-connect/`](cmd/tc-connect/) | **接入层 CLI**：`sources` / `layers` / `mock` / `normalize` / `compose` / `price` / `migrate` / `refresh` / `jobs` / `order` / `fulfill` / `refund` / `redeem` / `stock` / `hold` / `variant` |
 | [`internal/`](internal/) | **接入层实现**：传输层 / 凭证 / 归一化 / 各源适配器 / 归档幂等 / 定价读侧 / 迁移引擎 / 读模型刷新 / 状态机读侧 / 下单 / 改派 / 履约 / 退款 / 核销 / 库存 / 异构差异读侧 / 覆盖语义 / 组合配方写侧 / **C 端 API** / mock / 业务 ID / 测试库 |
 | [`configs/`](configs/) | 传输层配置（端点 / ICODE / 凭证口径 / 错误码）+ 映射规则（单一真相） |
 | [`fixtures/`](fixtures/) | 真实报文结构的样例（canonical / trip_com / globaltix） |
 | [`scripts/mapping_dryrun.py`](scripts/mapping_dryrun.py) | **无凭证集成演练**：用真实报文结构跑一遍 mapping → 路由（归一化调用 Go 实现） |
 | [`scripts/order_demo.py`](scripts/order_demo.py) | **下单链路演示**：找有售价的日期 → 下单 → 幂等重放 → 查单 |
 | [`scripts/poc/index.html`](scripts/poc/index.html) | 前端 POC：变体矩阵 / 覆盖语义匹配 / 变体级路由 / 模型缺口（演练生成物） |
-| [`Makefile`](Makefile) | build / test / mock / layers / dryrun / db / check / order-demo / api |
+| [`Makefile`](Makefile) | build / test / mock / layers / dryrun / db / check / order-demo / jobs / api |
 | [`AGENTS.md`](AGENTS.md) | 仓库级硬约束与命令约定 |
 
 ---

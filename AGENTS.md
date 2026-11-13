@@ -433,6 +433,23 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
     另外：**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态，
     不是数据违规）—— `v_voucher_expiry_overdue` 让它看得见；**作业不碰订单状态**
     （`fulfillment_status` 是推导值，由 `fn_apply_order_fulfillment` 推导）。
+39. **作业调度有唯一入口，间隔不写在代码里。** 作业在库里但没有人调它，作业就只是
+    库里一个没人跑函数 ——「券过期了由作业统一改」这句话就落空了。唯一入口是
+    `tc-connect jobs`（`cmd/tc-connect/cmd_jobs.go`，`make jobs` 是包装）。
+    五条口径写死：
+    - **一次跑完就退出**，不常驻、不自己排期。常驻进程要处理信号、重启、漂移、
+      跨库切换 —— 那些是调度器的活，不是这个命令的活。
+    - **间隔不写在代码里。** 写死就成了第二份口径，改的时候要改两处，
+      而且改漏一处没人知道。交给系统 cron 或 k8s CronJob：
+      `*/5 * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center`
+    - **失败非零退出**，重试交给调度器按自己的策略决定。
+    - **作业幂等**，靠的是「`UPDATE ... WHERE status = 'issued'`」这个形状，
+      不是靠调度器的自觉。限批（`--limit`，默认 500）是同一件事的另一半。
+    - **两种失败要分开**：刷新后仍漂移 = 硬事实，非零退出（防御性断言 ——
+      刷新本身就是修复机制，手改出来的漂移会被修好，所以它是最后一道防线，
+      不是常规路径）；到期却还停在 `issued` = 运行状态，**只报告不失败**
+      （硬约束 38 的「看得见但不挡门禁」—— 让它挡住调度，会把一条告警变成一个死循环）。
+    另外：**这条命令不重算任何业务结论** —— 判据全在库里，Go 侧只拼参数、只读结果。
 
 ## 目录
 
@@ -474,7 +491,7 @@ db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory �
 db/migrations/028_*.sql        凭证过期作业（fn_expire_vouchers）—— 券过期了由作业统一改，「交付过」口径补上 expired
 db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）
 db/verify.sql                 验收查询（46 组视图查询 + 不变量断言，条数见 make counts）
-cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
+cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / jobs / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
 cmd/tc-api/                  C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历；只读读模型，只服务在营的自营 C 端渠道）
 internal/
   apperr/                     错误四分类 + 缺失凭证 + 端点未确认
@@ -512,7 +529,7 @@ scripts/mapping_dryrun.py     无凭证集成演练（源报文 → 归一化 �
 scripts/order_demo.py         下单链路端到端演示（自己找有售价的日期，不写死日期）
 scripts/poc_page.py           前端 POC 渲染器
 scripts/counts.sh + counts.sql 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
-Makefile                      build / test / mock / layers / dryrun / db / check / order-demo / counts
+Makefile                      build / test / mock / layers / dryrun / db / check / order-demo / jobs / counts
 ```
 
 ## 常用命令
@@ -571,6 +588,7 @@ make check                          # 提交前完整自检（vet + test + mock 
 make migrate                        # 应用待应用的迁移（存量库升级用这个，别重建）
 make dbstatus                       # 看迁移状态（哪些已应用、哪些待应用）
 make refresh                        # 刷新 C 端读模型并查漂移
+make jobs                           # 跑一遍批处理作业（凭证过期 / 预占过期 / 读模型刷新）—— 一次性命令，跑完退出
 make order-demo                     # 下单链路端到端演示（下单 → 幂等重放 → 查单）
 ./bin/tc-connect fulfill show --db ticket_center --order 7   # 查履约状态（支付/预订/出券）
 ./bin/tc-connect refund show --db ticket_center --refund 1    # 查退款单状态
@@ -587,6 +605,12 @@ make order-demo                     # 下单链路端到端演示（下单 → �
 ./bin/tc-connect variant bundle  --db ticket_center --variant 21   # 看套装（源侧把整套当一个 SKU 卖）由谁组成
 ./bin/tc-connect variant supply  --db ticket_center --variant 18   # 看单张 / 配方 / 套装三种供给形态的对照
 ./bin/tc-connect compose plan    --db ticket_center --source globaltix --fixture fixtures/globaltix_catalog.json   # 组合配方能不能解出来
+```
+
+批处理作业交给**外部调度器**按 cron 调（间隔不写在代码里，硬约束 39）：
+
+```
+*/5 * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center
 ```
 
 `<日期>` 要**现查现用**：种子里所有日期是 `current_date + N`（`db/seed.sql`），
@@ -646,6 +670,7 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] 改动按团单位价的口径 → `026` 迁移 + `SPEC.md` §4.25 / §5.22 同步更新，且「总价 → 单位价只有一个实现、按团的人均只是分摊不是价、明细里记的是分摊后的数、清单与写路径同口径」仍生效
 - [ ] 改动预占默认 TTL 的口径 → `027` 迁移 + `SPEC.md` §4.26 / §5.23 同步更新，且「默认值住在库里、不指定与指定 900 落同一张预占、预占必须有确定的到期时间」仍生效
 - [ ] 改动凭证过期的口径 → `028` 迁移 + `SPEC.md` §4.27 / §5.24 同步更新，且「只动 issued、判据是券自己的 valid_to、幂等、限批默认 500、事件由触发器自动落」仍生效
+- [ ] 改动作业调度的口径 → `SPEC.md` §5.25 同步更新，且「一次跑完就退出、间隔不写在代码里、失败非零退出、作业幂等、漂移非零退出但到期未改只报告」仍生效
 - [ ] 改动「交付过」的口径 → `fn_delivered_voucher_statuses()` 是唯一读法，且「expired 算交付过、void/refunded 不算、履约推导 / 改派守卫 / 出券判定三处口径一致」仍生效
 - [ ] `make test` 全绿（Go 单元测试）
 - [ ] `make mock` 协议自检全 PASS

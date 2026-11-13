@@ -2210,6 +2210,61 @@ CLI：`tc-connect redeem expire`（跑作业）、`tc-connect redeem overdue`（
 
 ---
 
+### 5.25 作业调度的口径
+
+**这件事是什么**：库里有一批批处理作业（凭证过期 `fn_expire_vouchers`、
+预占过期 `fn_expire_holds`、组合同步 `fn_sync_combo_calendar`、
+读模型刷新 `fn_refresh_read_models`）。作业在库里，但**没有人调它，作业就只是库里一个
+没人跑函数** ——「券过期了由作业统一改」这句话就落空了。所以这里给作业一个入口：
+`tc-connect jobs` 一次跑完全部作业，跑完退出。
+
+**为什么要有这条命令**：没有入口的作业等于没有作业。上一节落地了
+`fn_expire_vouchers`，判据、幂等、事件全对，但只要没人调它，券的状态就还是停在
+`issued` —— 那个状态洞原样存在。补作业而不补调度，是把「没人跑」这件事从
+「没人知道」变成「以为有人跑」。
+
+**唯一实现**：`cmd/tc-connect/cmd_jobs.go` 的 `tc-connect jobs`，
+`make jobs` 是它的包装。
+
+| 位置 | 干什么 |
+|---|---|
+| `tc-connect jobs` | 唯一入口：跑一遍全部作业，再做读侧自检 |
+| `make jobs` | 包装（`--db $(PGDATABASE)`） |
+| `fn_expire_vouchers` / `fn_expire_holds` | 作业本体：判据在库里（§5.24 / §5.9） |
+| `fn_sync_combo_calendar` + `fn_refresh_read_models` | 组合同步与读模型刷新（§5.14 / §5.11） |
+| `v_c_readmodel_drift` | 刷新后仍对不上的卡片（漂移） |
+| `v_voucher_expiry_overdue` | 到期却还停在 `issued` 的券数与分布 |
+
+**几条口径写死**：
+
+- **一次跑完就退出，不常驻、不自己排期。** 命令是批处理，不是守护进程。
+  常驻进程要处理信号、重启、漂移、跨库切换 —— 那些是调度器的活，不是这个命令的活。
+- **间隔不写在代码里。** 多久跑一次是运维的决定，写死在代码里就成了**第二份口径**：
+  改的时候要改两处，而且改漏一处没人知道。交给系统 cron 或 k8s CronJob：
+
+  ```
+  */5 * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center
+  ```
+
+  失败重试也交给调度器：命令失败时**非零退出**，调度器按自己的策略重试。
+- **作业本身是幂等的，重跑一遍不会多改什么。** 幂等靠的是
+  「`UPDATE ... WHERE status = 'issued'`」这个形状，不是靠调度器的自觉。
+  限批（`--limit`，默认 500）是同一件事的另一半：本批没改完的，下一轮接着改。
+- **刷新后仍漂移 = 硬事实，非零退出。** 读模型刚刷新过还对不上，说明有东西不对，
+  必须让人看见。（这条是**防御性断言**：刷新本身就是修复机制，
+  手改出来的漂移会被刷新修好 —— 所以它是最后一道防线，不是常规路径。）
+- **仍有券停在 `issued`（到期却没改）→ 只报告，不失败。** 这可能是本批的余量
+  （到期券比 `--limit` 多），也可能是漏跑；漏跑是**运行状态**，不是数据违规 ——
+  §5.24 的口径是「看得见但不挡门禁」。让这一项挡住调度，会把一条告警变成一个死循环。
+- **这条命令不重算任何业务结论。** 判据全在库里，Go 侧只拼参数、只读结果。
+
+Go 侧不变：`internal/redemption` / `internal/inventory` / `internal/readmodel`
+各自只拼参数、只读结果，作业的口径仍在库里的函数与视图。
+
+CLI：`tc-connect jobs [--db name] [--limit n]`。
+
+---
+
 ## 6. 领域事件（Domain Events）
 
 | 事件 | 触发点 | 典型订阅方 |
@@ -2312,6 +2367,7 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 - [x] **按团报价的单位价口径只有一个实现**（§5.22）：`fn_unit_amount(basis, total, quantity)` 是「总价 → 单位价」的唯一实现（按团按人分摊，按人原样）；落单、改派、待改派清单三条路都调它 —— 清单比成本时原来直接拿团成本和人均成本比（1100 ≠ 157.14），每一条按团报价的未收款明细都被误报成「成本变了」，而真去改派写路径自己返回 `no_change`，**清单说的与写路径做的不一样，清单就不可信**；团总价与团成本留在明细快照里（`group_total` / `cost_price`）；按团单位价口径侧不变量 116-118 守住「分摊口径自相矛盾、清单说变了其实没变」
 - [ ] 行级退款（需要「优惠券 / 税费 / 折扣怎么摊到每一行」的分摊口径 + 源侧支持部分取消；在此之前系统对行级退款明确报错，不自己编规则）
 - [x] **凭证过期作业落地**（§5.24）：`fn_expire_vouchers`（`db/migrations/028_voucher_expiry.sql`）把 `valid_to` 已过的 `issued` 券推进到 `expired`（幂等、限批、判据是券自己的 `valid_to`）；事件由 `trg_voucher_status_event` 自动落，作业不自己插；「交付过」的口径一起改成 `issued` / `used` / `expired`（`fn_delivered_voucher_statuses`）—— 不改的话，券一过期，订单的履约状态会翻成未履约、已出票的明细会变成可改派（一次交付两次出票）；作业漏跑由 `v_voucher_expiry_overdue` 看得见，不挡门禁；过期作业侧不变量 120-121 守住「过期券必须有有效期终点、必须已出票」
+- [x] **作业有入口了**（§5.25）：`tc-connect jobs` 一次跑完凭证过期 / 预占过期 / 组合同步 / 读模型刷新，跑完退出；间隔不写在代码里，交给外部调度器按 cron / CronJob 调；失败非零退出让调度器重试；作业幂等靠 `UPDATE ... WHERE status = 'issued'` 的形状，不靠调度器的自觉；刷新后仍漂移非零退出（防御性断言），到期却还停在 `issued` 只报告不失败（§5.24 的「看得见但不挡门禁」）
 
 ---
 
@@ -2319,6 +2375,7 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 
 | 日期 | 变更 | 影响 |
 |---|---|---|
+| 2026-11-13 | **作业调度落地（§5.25）**：新增 `cmd/tc-connect/cmd_jobs.go`（`tc-connect jobs`）与 `make jobs`：一次跑完凭证过期（`fn_expire_vouchers`）/ 预占过期（`fn_expire_holds`）/ 组合同步（`fn_sync_combo_calendar`）/ 读模型刷新（`fn_refresh_read_models`），再读 `v_c_readmodel_drift` 与 `v_voucher_expiry_overdue` 做读侧自检；新增 §5.25 与 §7 验收项；**无迁移**（判据与作业本体全在库里，Go 侧只拼参数、只读结果） | 上一条落地了 `fn_expire_vouchers`，但**作业在库里没人调它** —— 判据、幂等、事件全对，只要没人跑，券的状态还是停在 `issued`，那个状态洞原样存在。补作业而不补调度，是把「没人跑」从「没人知道」变成「以为有人跑」。取舍写在这里：**一次跑完就退出**（不常驻、不自己排期 —— 常驻进程要处理信号、重启、漂移、跨库切换，那是调度器的活）；**间隔不写在代码里**（写死就成了第二份口径，改的时候要改两处，改漏一处没人知道），交给系统 cron 或 k8s CronJob；**失败非零退出**，重试交给调度器；**作业幂等**靠的是「`UPDATE ... WHERE status = 'issued'`」这个形状，不是靠调度器的自觉，限批（默认 500）是同一件事的另一半；**刷新后仍漂移非零退出**（读模型刚刷新过还对不上就是硬事实 —— 这条是**防御性断言**，刷新本身就是修复机制，手改出来的漂移会被修好，所以它是最后一道防线不是常规路径）；**到期却还停在 `issued` 只报告不失败**（那是运行状态不是数据违规，§5.24 的口径是「看得见但不挡门禁」—— 让它挡住调度，会把一条告警变成一个死循环） |
 | 2026-11-13 | **凭证过期作业落地（028）**：新增 `db/migrations/028_voucher_expiry.sql`：`fn_expire_vouchers(p_limit INTEGER DEFAULT 500)` 把 `valid_to` 已过的 `issued` 券推进到 `expired`（幂等、限批、按 `valid_to, id` 排序）；新增 `fn_delivered_voucher_statuses()`（`issued` / `used` / `expired` = 交付过），并把 `fn_apply_order_fulfillment` / `fn_reassign_order_item` / `fn_issue_voucher` 与诊断视图里散落的 `IN ('issued','used')` 改读这个谓词；不变量从 119 条扩到 121 条（120 过期券必须有有效期终点 / 121 过期券必须已出票）；新增 §4.27 与 §5.24；新增 `v_voucher_expiry_overdue`（作业漏跑看得见，但不挡门禁）；Go 侧 `internal/redemption` 加 `ExpireOverdue` / `ShowOverdue`，CLI 加 `tc-connect redeem expire` / `redeem overdue`；回归测试三条（推进 + 幂等 / 事件自动落 / 别的状态不动） | 008 的核销路径刻意**只落核销记录、不改券状态**（「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改」）—— 那句话当时是承诺，兑现它的那一半一直缺着。缺口不是「少一个功能」，是**一个看得见的状态洞**：券的有效期过了，券的状态还停在 `issued`，两个地方说的不是同一件事（券能被扫成「过期」，券本身还说「我还是有效的、还没用过」）。更要命的是**「交付过」的口径漏了 `expired`**：库里到处用 `status IN ('issued','used')` 表示「这张票给过客户」，而 `expired` 同样表示交付过 —— 不改的话，券一过期，订单的履约状态会从 `fulfilled` 翻成未履约、已出票的明细会变成可改派（一次交付两次出票）。取舍写在这里：**交付过 = `issued` / `used` / `expired`**（`void` / `refunded` 才是「没交付」或「收回」），用一个共享谓词 `fn_delivered_voucher_statuses()` 读，不在五处各写一遍 IN 列表（抄五遍的口径，迟早有一处漏）；**作业只 UPDATE 不自己插事件**（`trg_voucher_status_event` 自动落 `VoucherExpired`，手插事件就绕过了状态机）；**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态不是数据违规，堵在门禁里只会让作业跑不成；`v_voucher_expiry_overdue` 让它看得见）；**作业不碰订单状态**（`fulfillment_status` 是推导值，由 `fn_apply_order_fulfillment` 推导，作业去写它就是两份实现）。判据是**券自己的 `valid_to`**，不是订单日期、不是可售单元的承诺 —— 券的有效期窗口是发券时定下的事实 |
 | 2026-11-13 | **推导出来的数不许手抄（规整第二步·续）**：把 `scripts/counts.sh` 的覆盖面补全到「库对象数」（业务表 / 视图 / 索引 / 触发器 / CHECK 约束 / 序列 / 函数，各按它自己的口径：`pg_class` / `pg_indexes` / `pg_trigger NOT tgisinternal` / `pg_constraint` / `information_schema.routines`）与「种子行数」（表清单**从 `db/seed.sql` 自己的「-- 统计」段抽出来**，种子灌了哪些表由种子自己说，脚本不另抄一份）；`AGENTS.md` / `README.md` / `docs/schema-design.md` 里手抄的库对象数与种子行数改成「见 `make counts`」；硬约束 37 补一条「标签不许含糊」 | 上一条只把「不变量 / 测试 / mock 断言」三类数收到 `make counts` 后面，但**库对象数与种子行数还散在 AGENTS.md / README.md / docs/schema-design.md 三处手抄** —— 这一类数最脆：加一个迁移就多一个视图、改一次种子就多几行，读的人得自己算才知道文档是不是旧的。这一步抓出两处真漂移：① README 写「60 视图」，027 加过一个视图，实际是 **61**（文档少写了一个，人照着文档数就以为少了一个视图）；② 「14 日历格子」这个标签在 `c_product_calendar`（9 行）与 `c_variant_calendar`（14 行）之间**含糊** —— 它挨着的数字 9 指的是 `c_product_card`，标签却能被读成另一张表。取舍写在这里：**数只数一次，文档只引用不抄**（库对象数与种子行数一起进 `make counts`）；**标签不许含糊**（标签里带上表名，不让读的人猜）；**口径写在标签后面，别换口径**（触发器用 `pg_trigger NOT tgisinternal` 是 39，`information_schema.triggers` 是 46 —— 它按事件展开，换口径就换了数） |
 | 2026-11-13 | **推导出来的数不许手抄（规整第二步）**：新增 `scripts/counts.sh` + `scripts/counts.sql`（`make counts`），从各自的源头数出「不变量条数 / 各主题分组条数 / 测试函数数 / mock 断言数」；`AGENTS.md` / `README.md` / `docs/integrations.md` / `docs/connector-contract.md` / `docs/schema-design.md` 里手抄的条数一律改成「见 `make counts`」；`SPEC.md` §4 保留一份快照（合同需要自足）但注明「以视图定义为准」；`db/verify.sql` 的门禁自检从 `seq = 118` 改成按 `check_name` 定位；`AGENTS.md` 新增硬约束 37 | 上一条规整（2026-11-12）把「规则只住 SPEC 一处」定下来了，但**数**还是散在各处手抄：不变量条数在 SPEC / AGENTS / README / schema-design 各写一遍，测试条数与 mock 断言数又各有各的一份。加一天条目的那天，抄过的地方就有一处是旧的 —— 读者先信文档、再跑出另一个数，然后开始怀疑整个仓库（这是最费时间的一种不一致）。取舍写在这里：**数只数一次，文档只引用不抄**；**按编号定位的门禁不许写在文档里**（`seq` 会重排，`check_name` 跨重排稳定，`db/verify.sql` 原来那句 `seq = 118` 重排一次就静悄悄指到别的门禁上去了）。不变量一条没少、一条没丢（119 条仍逐条断言，门禁仍全绿） |
