@@ -123,9 +123,9 @@
 
 ## 4. 业务不变量（Invariants）
 
-以下 119 条已固化为 `v_invariant_checks` 视图，`db/verify.sql` 会逐条断言，任一条违反即数据违规。
+以下 121 条已固化为 `v_invariant_checks` 视图，`db/verify.sql` 会逐条断言，任一条违反即数据违规。
 
-门禁按主题分住在二十一个视图里，`v_invariant_checks` 是它们的并集（`UNION ALL`）。
+门禁按主题分住在二十二个视图里，`v_invariant_checks` 是它们的并集（`UNION ALL`）。
 **这份分组只写这一处**，各主题小节只说「门禁住在 `v_invariant_checks_<主题>` 里」，
 不再各自抄一遍分组 —— 抄一遍就会分叉，分叉的门禁等于没有门禁。
 分组与条数以 `v_invariant_checks` 的定义为准（`pg_get_viewdef` 可查），
@@ -134,8 +134,9 @@
 供给/展示侧 45 条 + 交易侧 8 条 + 下单侧 1 条 + 履约侧 6 条 + 退款侧 4 条 + 核销侧 4 条 +
 库存预占侧 4 条 + 有效期侧 3 条 + 读模型侧 6 条 + 组合映射侧 4 条 + 组合售卖侧 7 条 +
 收紧侧 2 条 + 套装侧 5 条 + 套装库存侧 2 条 + 供给形态对照侧 3 条 + 供给形态不许缩小侧 3 条 +
-可履约源数侧 1 条 + 改派侧 4 条 + 份数区间侧 3 条 + 按团单位价口径侧 3 条 + 预占到期时间侧 1 条
-= 119 条。
+可履约源数侧 1 条 + 改派侧 4 条 + 份数区间侧 3 条 + 按团单位价口径侧 3 条 + 预占到期时间侧 1 条 +
+凭证过期作业侧 2 条
+= 121 条。
 
 ### 4.1 供给与交易侧（1-20）
 
@@ -152,7 +153,7 @@
 | 9 | 权益消耗数不得超过发放数 |
 | 10 | 对客售价必须 ≥ 采纳成本（不得亏本销售） |
 | 11 | 已支付订单必须有 succeeded 状态的支付记录 |
-| 12 | 已履约订单必须有 issued/used 状态凭证 |
+| 12 | 已履约订单必须有交付过的凭证（issued/used/expired） |
 | 13 | 映射行的 `supplier_id` 与源商品所属供应商一致 |
 | 14 | 所有在用币种（非基准币种）必须有汇率快照 |
 | 15 | 每个 online 状态的渠道上架，必须绑定至少一个启用的源 |
@@ -404,7 +405,7 @@
 ### 4.7 交易侧不变量（46-53，2026-11-06 补充）
 
 交易侧的门禁与供给/展示侧分开住在 `v_invariant_checks_tx` 里，
-（`v_invariant_checks` 是二十一个主题视图的并集，分组见 §4 开头。）
+（`v_invariant_checks` 是各主题视图的并集，分组见 §4 开头。）
 拆开住是为了不把 45 条不变量抄一遍 —— 抄一遍就会分叉，分叉的门禁等于没有门禁。
 
 | # | 不变量 |
@@ -912,6 +913,26 @@ C 端读到的却是「0 个源」：**一个在卖的套餐被说成没有供�
 
 口径在 §5.23。
 
+### 4.27 凭证过期作业侧不变量（120-121，2026-11-13 补充）
+
+券的有效期过了，券的状态还停在 `issued` —— 这是一个**看得见的状态洞**：
+券还能被扫成「过期」，但券本身说「我还是有效的、还没用过」。
+两个地方说的不是同一件事。门禁住在 `v_invariant_checks_voucher_expiry` 里。
+
+| # | 不变量 |
+|---|---|
+| 120 | 过期的凭证必须有有效期终点（`expired` 的券没有 `valid_to` = 判它过期的依据没了） |
+| 121 | 过期的凭证必须已出票（`expired` 的券没有 `issued_at` = 一张从没交付过的券被说成「过期了」） |
+
+- 没有有效期终点（不变量 120）—— `expired` 说的是「有效期过了」，
+  没有 `valid_to` 就没法说它是哪一天过的。券卡在 `expired` 上，
+  客户问「我这张票哪天过期」，答不上来。
+- 没出票就过期（不变量 121）—— `expired` 蕴含「这张券给过客户」。
+  没出票的券是 `pending` 或 `void`，把它推成 `expired` 就是
+  **凭空造出一次交付**：订单的履约状态、库存的已售数、对账的交付口径全都会跟着偏。
+
+口径在 §5.24。
+
 ---
 
 ## 5. 状态机
@@ -957,6 +978,11 @@ pending → issued → used
 `issued → used` 这条边只有一条来路：核销写路径 `fn_redeem_voucher()`（见 §5.8）。
 出券写 `pending → issued`，核销写 `issued → used`，两条边各归一条写路径，
 谁也不越界改别人的状态。
+
+`issued → expired` 这条边也只有一条来路：凭证过期作业 `fn_expire_vouchers()`
+（见 §5.24）。核销路径**只落核销记录、不改券状态** ——
+券过期了由过期作业统一改（`fn_redeem_voucher` 遇到过期券时
+返回 `result='expired'`、`reason='voucher_expired'`，但不改 `voucher.status`）。
 
 ### 5.4 状态机由机制保证（2026-11-06 落地）
 
@@ -2084,6 +2110,104 @@ Go 侧不变：`internal/inventory` 仍然只拼参数、只读结果，
 回归测试 `TestHoldWithoutTTLMeansDefaultTTL` 钉住契约：
 不指定 TTL 与指定 900 必须落在**同一张预占**上（同一个 hash）。
 
+### 5.24 凭证过期作业的口径（2026-11-13 落地）
+
+**这件事是什么**：券的有效期过了，券的状态还停在 `issued`。
+券已经不能进场了，状态却还写着「已出票、还没用过」——
+任何读券状态的地方都会读到错的值，客户问「我这张票还能用吗」也答不上来。
+
+**为什么核销路径不直接改**：核销路径（008）刻意**只落核销记录、不改券状态**：
+
+```
+WHEN 'expired' THEN v_result := 'expired'; v_reason := 'voucher_expired';
+```
+
+——「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改。
+一件事一件事分开，才说得清是谁在什么时候把哪张票判成什么。」
+
+那句话不是注释，是承诺。现在补上兑现它的那一半。
+
+**唯一实现**：`fn_expire_vouchers(p_limit INTEGER DEFAULT 500)`
+（`db/migrations/028_voucher_expiry.sql`），Go 侧是 `internal/redemption`
+的 `ExpireOverdue`（只拼参数、只读结果，不自己判哪张券过期、不自己改状态、不自己发事件）。
+
+五条口径写死：
+
+- **只动 `status='issued'` 的券。**
+  `pending` 是还没出票的券，`used` 是已核销的券（它「被用过」这个事实与过期无关），
+  `void` / `refunded` 是另外两条事实。作业只推进这一种。
+- **判据是券自己的 `valid_to`（`valid_to <= now()`）。**
+  不重算、不看别的表 —— 有效期口径在 010 已经统一到「格子日期 + 有效天数」，这里只是读它。
+- **幂等。** 同一张券只会被改一次（第二次跑没有「到期且仍是 `issued`」的券了）。
+  跑第二遍返回 0，不报错、不重复改。
+- **限批。** 一次最多 `p_limit` 条（默认 500），按 `valid_to, id` 排序取 ——
+  避免一次锁太多行。
+- **事件由机制保证，不由自觉。** `state_transition` 里 `('issued' → 'expired')`
+  早就在（003），守卫触发器 `trg_voucher_status_guard` 挡住非法流转，
+  事件触发器 `trg_voucher_status_event` 自动落一条 `VoucherExpired` 到 `event_outbox`。
+  所以作业只 `UPDATE` 状态，**不自己插事件**。
+
+**「交付过」的口径必须一起改（这一条最容易漏）**：
+
+全库有一批地方用 `v.status IN ('issued', 'used')` 表达一个意思：
+**「票确实交付到客户手上了」**。这个集合漏掉了 `expired`。
+漏掉的后果不是「过期券算不出来」，是**交付过的事实被改写**：
+
+1. `fn_apply_order_fulfillment` 的 `delivered` 口径 ——
+   券一过期，`delivered` 归零，订单的 `fulfillment_status` 从 `fulfilled` 翻成
+   `partially_fulfilled` / `failed`。客户交了钱、拿到了票，票只是过期了，
+   系统却说这张单没履约。
+2. `fn_reassign_order_item` 的「已经出票不许改派」守卫 ——
+   券一过期，这条明细又变成「可改派」。已经卖出去的票被换源重卖一次，
+   一次交付两次出票 —— 这是最贵的一种：**按 A 源的价格卖、按 B 源出票**。
+3. `fn_issue_voucher` 的 `ticketed` 判定、`v_order_item_source`、
+   `v_reassign_candidates` —— 同一个毛病。
+
+所以口径改成：**交付过 = `issued` / `used` / `expired`**，
+`void` / `refunded` 不算（作废与退款是另外两条事实）。
+
+为什么 `expired` 算交付过：状态机说得清（`issued → expired → refunded`
+是一条合法的边链，`expired` 坐在交付之后）；退款路径认它
+（`fn_complete_refund` 的券状态白名单里有 `expired` —— 过期券该退能退，
+说明它是真实交付出去的东西）；核销路径把它与 `void` / `refunded` 分开。
+
+**一个事实只写一处**：这个判定散在 5 个函数与 3 个视图里，
+每处自己写一遍 `IN` 列表就是同一个意思写五遍，改一处忘了另一处就复发。
+所以它有一个共享读法：`fn_delivered_voucher_statuses()` 返回
+`ARRAY['issued','used','expired']`，调用方一律读它。
+
+**诊断视图 `v_order_fulfillment_gap`** 是例外：它的 `issued_vouchers` /
+`used_vouchers` 是**状态分布统计**，不是「交付过」的判定。
+过期券单独开一列 `expired_vouchers`，另加一列 `delivered_vouchers`；
+`suspected_lost`（已付款但没交付 → 疑似丢单）改用 `delivered` 口径，
+否则过期之后每张正常交付的单都会被误报成疑似丢单。
+
+**作业漏跑看得见，但不挡门禁**：
+`v_voucher_expiry_overdue` 给出「到期却还停在 `issued`」的券数、
+有效期终点的范围、分布在多少张订单上。
+**不加**「不许有过了期还停在 `issued` 的券」这种门禁 ——
+那是**作业有没有跑**的问题，不是数据对不对的问题；
+拿它当门禁，库会因为「作业没被调度」而红，那是把运维状态混进数据质量。
+
+**作业也不碰订单状态**：`fulfillment_status` 是**推导值**，
+由 `fn_apply_order_fulfillment` 从明细的实际出票情况推导（不变量 60）。
+作业只改券状态；订单状态由履约路径重算。
+
+表与函数：
+
+| 位置 | 干什么 |
+|---|---|
+| `fn_expire_vouchers` | 唯一实现：把过了有效期的 `issued` 券推进到 `expired`（幂等，可反复跑） |
+| `fn_delivered_voucher_statuses` | 「交付过」的共享读法：`issued` / `used` / `expired` |
+| `v_voucher_expiry_overdue` | 作业漏跑时的现状：到期却还停在 `issued` 的券数与分布 |
+| `v_invariant_checks_voucher_expiry` | 凭证过期作业侧不变量（120-121） |
+
+Go 侧不变：`internal/redemption` 只拼参数、只读结果。
+CLI：`tc-connect redeem expire`（跑作业）、`tc-connect redeem overdue`（看现状）。
+回归测试 `TestExpireOverdueAdvancesIssuedVouchersAndIsIdempotent`、
+`TestExpireOverdueEmitsVoucherExpiredEvent`、
+`TestExpireOverdueLeavesOtherStatusesAlone` 钉住契约。
+
 ---
 
 ## 6. 领域事件（Domain Events）
@@ -2187,7 +2311,7 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 - [x] **源侧的售卖份数区间有人读了**（§5.21）：`min_qty` / `max_qty` 是源侧的一手事实（最少成团人数 / 单笔上限），以前全库没有一处读它 —— 客户买 1 张按团价的票，系统按整团价收了 1200，源侧因为不足 6 人拒单（钱收了、票出不来）；`fn_source_quantity_limits`（唯一读法）+ `fn_qty_servable`（唯一判定）守着落单与改派两条路；份数的单位 = 源侧的售卖单位（单张按人 = 份、按团 = 人、套装 = 套、配方 = 该源 SKU 的份数），同一个源 SKU 顶多个成分时比的是**这个 SKU 的总份数**（源侧收到的是一条预订里的总份数）；区间记进明细快照的 `quantity_limits`；份数区间侧不变量 113-115 守住「留痕自相矛盾、留痕指向别的源、改派后区间没换」
 - [x] **按团报价的单位价口径只有一个实现**（§5.22）：`fn_unit_amount(basis, total, quantity)` 是「总价 → 单位价」的唯一实现（按团按人分摊，按人原样）；落单、改派、待改派清单三条路都调它 —— 清单比成本时原来直接拿团成本和人均成本比（1100 ≠ 157.14），每一条按团报价的未收款明细都被误报成「成本变了」，而真去改派写路径自己返回 `no_change`，**清单说的与写路径做的不一样，清单就不可信**；团总价与团成本留在明细快照里（`group_total` / `cost_price`）；按团单位价口径侧不变量 116-118 守住「分摊口径自相矛盾、清单说变了其实没变」
 - [ ] 行级退款（需要「优惠券 / 税费 / 折扣怎么摊到每一行」的分摊口径 + 源侧支持部分取消；在此之前系统对行级退款明确报错，不自己编规则）
-- [ ] 凭证过期作业（把 `valid_to` 已过的 `issued` 券推进到 `expired`。核销写路径刻意只落记录不改券状态，等这个作业统一改；作业没做之前，券的 `expired` 状态得靠人工或别的入口改）
+- [x] **凭证过期作业落地**（§5.24）：`fn_expire_vouchers`（`db/migrations/028_voucher_expiry.sql`）把 `valid_to` 已过的 `issued` 券推进到 `expired`（幂等、限批、判据是券自己的 `valid_to`）；事件由 `trg_voucher_status_event` 自动落，作业不自己插；「交付过」的口径一起改成 `issued` / `used` / `expired`（`fn_delivered_voucher_statuses`）—— 不改的话，券一过期，订单的履约状态会翻成未履约、已出票的明细会变成可改派（一次交付两次出票）；作业漏跑由 `v_voucher_expiry_overdue` 看得见，不挡门禁；过期作业侧不变量 120-121 守住「过期券必须有有效期终点、必须已出票」
 
 ---
 
@@ -2195,6 +2319,7 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 
 | 日期 | 变更 | 影响 |
 |---|---|---|
+| 2026-11-13 | **凭证过期作业落地（028）**：新增 `db/migrations/028_voucher_expiry.sql`：`fn_expire_vouchers(p_limit INTEGER DEFAULT 500)` 把 `valid_to` 已过的 `issued` 券推进到 `expired`（幂等、限批、按 `valid_to, id` 排序）；新增 `fn_delivered_voucher_statuses()`（`issued` / `used` / `expired` = 交付过），并把 `fn_apply_order_fulfillment` / `fn_reassign_order_item` / `fn_issue_voucher` 与诊断视图里散落的 `IN ('issued','used')` 改读这个谓词；不变量从 119 条扩到 121 条（120 过期券必须有有效期终点 / 121 过期券必须已出票）；新增 §4.27 与 §5.24；新增 `v_voucher_expiry_overdue`（作业漏跑看得见，但不挡门禁）；Go 侧 `internal/redemption` 加 `ExpireOverdue` / `ShowOverdue`，CLI 加 `tc-connect redeem expire` / `redeem overdue`；回归测试三条（推进 + 幂等 / 事件自动落 / 别的状态不动） | 008 的核销路径刻意**只落核销记录、不改券状态**（「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改」）—— 那句话当时是承诺，兑现它的那一半一直缺着。缺口不是「少一个功能」，是**一个看得见的状态洞**：券的有效期过了，券的状态还停在 `issued`，两个地方说的不是同一件事（券能被扫成「过期」，券本身还说「我还是有效的、还没用过」）。更要命的是**「交付过」的口径漏了 `expired`**：库里到处用 `status IN ('issued','used')` 表示「这张票给过客户」，而 `expired` 同样表示交付过 —— 不改的话，券一过期，订单的履约状态会从 `fulfilled` 翻成未履约、已出票的明细会变成可改派（一次交付两次出票）。取舍写在这里：**交付过 = `issued` / `used` / `expired`**（`void` / `refunded` 才是「没交付」或「收回」），用一个共享谓词 `fn_delivered_voucher_statuses()` 读，不在五处各写一遍 IN 列表（抄五遍的口径，迟早有一处漏）；**作业只 UPDATE 不自己插事件**（`trg_voucher_status_event` 自动落 `VoucherExpired`，手插事件就绕过了状态机）；**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态不是数据违规，堵在门禁里只会让作业跑不成；`v_voucher_expiry_overdue` 让它看得见）；**作业不碰订单状态**（`fulfillment_status` 是推导值，由 `fn_apply_order_fulfillment` 推导，作业去写它就是两份实现）。判据是**券自己的 `valid_to`**，不是订单日期、不是可售单元的承诺 —— 券的有效期窗口是发券时定下的事实 |
 | 2026-11-13 | **推导出来的数不许手抄（规整第二步·续）**：把 `scripts/counts.sh` 的覆盖面补全到「库对象数」（业务表 / 视图 / 索引 / 触发器 / CHECK 约束 / 序列 / 函数，各按它自己的口径：`pg_class` / `pg_indexes` / `pg_trigger NOT tgisinternal` / `pg_constraint` / `information_schema.routines`）与「种子行数」（表清单**从 `db/seed.sql` 自己的「-- 统计」段抽出来**，种子灌了哪些表由种子自己说，脚本不另抄一份）；`AGENTS.md` / `README.md` / `docs/schema-design.md` 里手抄的库对象数与种子行数改成「见 `make counts`」；硬约束 37 补一条「标签不许含糊」 | 上一条只把「不变量 / 测试 / mock 断言」三类数收到 `make counts` 后面，但**库对象数与种子行数还散在 AGENTS.md / README.md / docs/schema-design.md 三处手抄** —— 这一类数最脆：加一个迁移就多一个视图、改一次种子就多几行，读的人得自己算才知道文档是不是旧的。这一步抓出两处真漂移：① README 写「60 视图」，027 加过一个视图，实际是 **61**（文档少写了一个，人照着文档数就以为少了一个视图）；② 「14 日历格子」这个标签在 `c_product_calendar`（9 行）与 `c_variant_calendar`（14 行）之间**含糊** —— 它挨着的数字 9 指的是 `c_product_card`，标签却能被读成另一张表。取舍写在这里：**数只数一次，文档只引用不抄**（库对象数与种子行数一起进 `make counts`）；**标签不许含糊**（标签里带上表名，不让读的人猜）；**口径写在标签后面，别换口径**（触发器用 `pg_trigger NOT tgisinternal` 是 39，`information_schema.triggers` 是 46 —— 它按事件展开，换口径就换了数） |
 | 2026-11-13 | **推导出来的数不许手抄（规整第二步）**：新增 `scripts/counts.sh` + `scripts/counts.sql`（`make counts`），从各自的源头数出「不变量条数 / 各主题分组条数 / 测试函数数 / mock 断言数」；`AGENTS.md` / `README.md` / `docs/integrations.md` / `docs/connector-contract.md` / `docs/schema-design.md` 里手抄的条数一律改成「见 `make counts`」；`SPEC.md` §4 保留一份快照（合同需要自足）但注明「以视图定义为准」；`db/verify.sql` 的门禁自检从 `seq = 118` 改成按 `check_name` 定位；`AGENTS.md` 新增硬约束 37 | 上一条规整（2026-11-12）把「规则只住 SPEC 一处」定下来了，但**数**还是散在各处手抄：不变量条数在 SPEC / AGENTS / README / schema-design 各写一遍，测试条数与 mock 断言数又各有各的一份。加一天条目的那天，抄过的地方就有一处是旧的 —— 读者先信文档、再跑出另一个数，然后开始怀疑整个仓库（这是最费时间的一种不一致）。取舍写在这里：**数只数一次，文档只引用不抄**；**按编号定位的门禁不许写在文档里**（`seq` 会重排，`check_name` 跨重排稳定，`db/verify.sql` 原来那句 `seq = 118` 重排一次就静悄悄指到别的门禁上去了）。不变量一条没少、一条没丢（119 条仍逐条断言，门禁仍全绿） |
 | 2026-11-13 | **预占的默认 TTL 口径落地（027）**：新增 `db/migrations/027_hold_ttl_default.sql`：`fn_hold_inventory` 整体替换一次，函数开头把 `p_ttl_seconds` 归一（`COALESCE(p_ttl_seconds, 900)`），哈希与 `expires_at` 都用归一后的值；不变量从 118 条扩到 119 条（119 落库的预占必须有确定的到期时间）；新增 §4.26 与 §5.23；Go 侧新增回归测试 `TestHoldWithoutTTLMeansDefaultTTL`；README / AGENTS.md / `docs/integrations.md` / `cmd/tc-connect` 里写死的示例日期改成 `<日期>` 占位 + 指向 `tc-connect variant feed` | `tc-connect hold create` 不带 `--ttl`（README 自己给的示例命令）**跑不通**：`ERROR: null value in column "request_hash" ... violates not-null constraint`。根因是 PostgreSQL 的 `DEFAULT` 只在**省略实参**时生效，显式传 `NULL` 拿到的是 `NULL` —— Go 侧把「没指定」编码成 `NULL`，`NULL` 顺着哈希链把 `idempotency_record.request_hash` 撑成 `NULL`，预占在写幂等记录那一步就炸。取舍写在这里：**默认值住在库里，不住在调用方**（任何调用方省略 TTL 或传 `NULL`，拿到的都是同一个 900；默认值写在调用方 = 每多一个调用方就多一份默认值，三处总有一处忘了改 —— 那是「同一份规则被抄在三处」的病在数值上复发）；**`DEFAULT` 不是归一**（凡是「参数可以不给」的函数，归一都得在函数体里显式写）；**幂等口径不变**，但不指定与指定 900 现在落同一张预占（同一个 hash），同键异内容仍当场报错 |

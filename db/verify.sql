@@ -716,7 +716,7 @@ SELECT o.id AS order_id, o.order_no, o.channel_id, oi.id AS order_item_id, oi.pr
    AND COALESCE((SELECT pv.variant_role FROM product_variant pv WHERE pv.id = oi.product_variant_id), 'base') <> 'combo'
    AND (SELECT count(*) FROM sales_order_item_source s WHERE s.order_item_id = oi.id) <= 1
    AND NOT EXISTS (SELECT 1 FROM booking b WHERE b.order_item_id = oi.id)
-   AND NOT EXISTS (SELECT 1 FROM voucher v WHERE v.order_item_id = oi.id AND v.status IN ('issued','used'))
+   AND NOT EXISTS (SELECT 1 FROM voucher v WHERE v.order_item_id = oi.id AND v.status IN ('issued','used','expired'))
    AND (p.sell_price IS NULL OR p.supplier_product_id IS DISTINCT FROM oi.supplier_product_id
         OR (CASE WHEN oi.pricing_basis = 'per_group' THEN round(p.sell_price / NULLIF(oi.quantity, 0), 2) ELSE p.sell_price END) IS DISTINCT FROM oi.unit_price
         OR p.cost_price IS DISTINCT FROM oi.unit_cost);

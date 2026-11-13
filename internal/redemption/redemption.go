@@ -143,6 +143,79 @@ func (s *Service) Redeem(req Request) (*Result, error) {
 	}, nil
 }
 
+// ---------------------------------------------------------------- 过期作业
+
+// ExpireOverdue 把有效期已过的已出票券改成 expired（作业入口）。
+//
+// 口径在库里的 fn_expire_vouchers（db/migrations/028_voucher_expiry.sql），
+// 这里只拼参数、只读结果 —— 不在这里判断「哪张券过期了」，
+// 不在这里改券状态，不在这里发事件。
+//
+// 为什么要有这个作业：核销路径（008）刻意只落核销记录、不改券状态 ——
+// 「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改。
+// 一件事一件事分开，才说得清是谁在什么时候把哪张票判成什么。」
+// 那句话不是注释，是承诺。现在补上兑现它的那一半。
+//
+// 幂等：同一张券只会被改一次（第二次跑没有到期且仍是 issued 的券了）。
+// 事件：状态一变，触发器 fn_emit_state_event 自动落一条 VoucherExpired ——
+// 不在这儿手插事件。
+func (s *Service) ExpireOverdue(limit int64) (int64, error) {
+	if s.db == nil {
+		return 0, fmt.Errorf("过期作业需要数据库连接")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Rows(fmt.Sprintf(
+		`SELECT expired_count FROM fn_expire_vouchers(%s);`, store.Quote(limit)))
+	if err != nil {
+		return 0, store.PLError(err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return parseInt(rows[0]["expired_count"]), nil
+}
+
+// Overdue 是过期作业漏跑时能看出来的现状。
+type Overdue struct {
+	// OverdueCount 是到期却还是 issued 的券数（作业跑完应该是 0）。
+	OverdueCount int64
+	// OldestValidTo / NewestValidTo 是这批券的有效期终点范围。
+	OldestValidTo string
+	NewestValidTo string
+	// AffectedOrders 是这批券分散在多少张订单上。
+	AffectedOrders int64
+}
+
+// ShowOverdue 读过期作业的现状（作业漏跑时看一眼就知道）。
+//
+// 只读，不推进。
+func (s *Service) ShowOverdue() (*Overdue, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("读过期现状需要数据库连接")
+	}
+	rows, err := s.db.Rows(
+		`SELECT overdue_count,
+                COALESCE(oldest_valid_to::text, '') AS oldest_valid_to,
+                COALESCE(newest_valid_to::text, '') AS newest_valid_to,
+                affected_orders
+           FROM v_voucher_expiry_overdue;`)
+	if err != nil {
+		return nil, store.PLError(err)
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("过期现状视图没有返回结果")
+	}
+	r := rows[0]
+	return &Overdue{
+		OverdueCount:   parseInt(r["overdue_count"]),
+		OldestValidTo:  r["oldest_valid_to"],
+		NewestValidTo:  r["newest_valid_to"],
+		AffectedOrders: parseInt(r["affected_orders"]),
+	}, nil
+}
+
 // ---------------------------------------------------------------- 读侧
 
 // Attempt 是一条核销记录（一次扫票）。

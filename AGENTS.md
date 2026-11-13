@@ -413,6 +413,26 @@ Go 侧只拼参数、只读结果 —— 不重算金额、不重排源、不自
       标签里带上表名。
     - **按编号定位的门禁不许写在文档里。** 不变量会重排（`seq` 重新编号），
       按序号点名的文档立刻指向别的门禁。按 `check_name` 定位（它跨重排稳定）。
+38. **凭证过期有唯一实现，作业是它唯一的写者。** 券的有效期过了，券的状态必须跟着走 ——
+    券还停在 `issued` 就是**两个地方说的不是同一件事**（券能被扫成「过期」，
+    券本身还说「我还是有效的、还没用过」）。唯一实现是库里的
+    `fn_expire_vouchers(p_limit INTEGER DEFAULT 500)`（`db/migrations/028_voucher_expiry.sql`），
+    Go 侧是 `internal/redemption` 的 `ExpireOverdue`（只拼参数、只读结果）。
+    四条口径写死：
+    - **判据是券自己的 `valid_to`。** 不是订单日期、不是可售单元的承诺 ——
+      券的有效期窗口是发券时定下的事实。
+    - **只动 `status='issued'` 的券。** `used` / `void` / `refunded` 是另外几条事实，
+      作业推它们就是在改写已经发生的事。
+    - **作业只 UPDATE，不自己插事件。** 状态一变，`trg_voucher_status_event`
+      自动落一条 `VoucherExpired` 到 `event_outbox`；手插事件就绕过了状态机。
+    - **「交付过」= `issued` / `used` / `expired`。** `expired` 同样是交付过 ——
+      库里到处用 `status IN ('issued','used')` 表示「这张票给过客户」，
+      漏掉 `expired` 的话，券一过期，订单的履约状态会翻成未履约、
+      已出票的明细会变成可改派（一次交付两次出票）。唯一读法是
+      `fn_delivered_voucher_statuses()`（`void` / `refunded` 才是「没交付」或「收回」）。
+    另外：**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态，
+    不是数据违规）—— `v_voucher_expiry_overdue` 让它看得见；**作业不碰订单状态**
+    （`fulfillment_status` 是推导值，由 `fn_apply_order_fulfillment` 推导）。
 
 ## 目录
 
@@ -451,6 +471,7 @@ db/migrations/024_*.sql        改派写路径（fn_reassign_order_item）——
 db/migrations/025_*.sql        源侧的售卖份数区间（fn_source_quantity_limits / fn_qty_servable）—— 落单与改派都守成团人数与单笔上限
 db/migrations/026_*.sql        按团报价的单位价口径（fn_unit_amount）—— 总价 → 单位价只有一个实现，写路径与待改派清单同口径
 db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory 归一 NULL → 900 秒）—— 默认值住在库里，不住在调用方
+db/migrations/028_*.sql        凭证过期作业（fn_expire_vouchers）—— 券过期了由作业统一改，「交付过」口径补上 expired
 db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）
 db/verify.sql                 验收查询（46 组视图查询 + 不变量断言，条数见 make counts）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
@@ -555,6 +576,8 @@ make order-demo                     # 下单链路端到端演示（下单 → �
 ./bin/tc-connect refund show --db ticket_center --refund 1    # 查退款单状态
 ./bin/tc-connect redeem scan  --db ticket_center --code TKT-001  # 扫一次票
 ./bin/tc-connect redeem show  --db ticket_center --voucher 3    # 查这张券和它的核销流水
+./bin/tc-connect redeem overdue --db ticket_center              # 看有几张券到期却还停在 issued（过期作业漏跑）
+./bin/tc-connect redeem expire  --db ticket_center              # 跑凭证过期作业（issued → expired）
 ./bin/tc-connect stock show  --db ticket_center --supplier-session 1   # 查这个源场次还剩多少
 ./bin/tc-connect variant feed    --db ticket_center --channel 1   # 看 C 端读模型里的变体行（顺带看哪天有售价）
 ./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 --qty 2 --date <日期>
@@ -622,6 +645,8 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] 改动份数区间的口径 → `025` 迁移 + `SPEC.md` §4.24 / §5.21 同步更新，且「区间唯一读法、份数的单位 = 源侧售卖单位、同源 SKU 按总份数判、接不住当场报错、不按份数换源、改派也守这条、区间进明细快照」仍生效
 - [ ] 改动按团单位价的口径 → `026` 迁移 + `SPEC.md` §4.25 / §5.22 同步更新，且「总价 → 单位价只有一个实现、按团的人均只是分摊不是价、明细里记的是分摊后的数、清单与写路径同口径」仍生效
 - [ ] 改动预占默认 TTL 的口径 → `027` 迁移 + `SPEC.md` §4.26 / §5.23 同步更新，且「默认值住在库里、不指定与指定 900 落同一张预占、预占必须有确定的到期时间」仍生效
+- [ ] 改动凭证过期的口径 → `028` 迁移 + `SPEC.md` §4.27 / §5.24 同步更新，且「只动 issued、判据是券自己的 valid_to、幂等、限批默认 500、事件由触发器自动落」仍生效
+- [ ] 改动「交付过」的口径 → `fn_delivered_voucher_statuses()` 是唯一读法，且「expired 算交付过、void/refunded 不算、履约推导 / 改派守卫 / 出券判定三处口径一致」仍生效
 - [ ] `make test` 全绿（Go 单元测试）
 - [ ] `make mock` 协议自检全 PASS
 - [ ] `python3 scripts/mapping_dryrun.py` 演练库不变量全 PASS

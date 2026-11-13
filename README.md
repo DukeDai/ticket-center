@@ -229,6 +229,8 @@ make order-demo                                       # 端到端演示：找有
 ./bin/tc-connect refund show  --db ticket_center --refund 1
 ./bin/tc-connect redeem scan  --db ticket_center --code TKT-001
 ./bin/tc-connect redeem show  --db ticket_center --voucher 3
+./bin/tc-connect redeem overdue --db ticket_center              # 到期却还停在 issued 的券（过期作业漏跑）
+./bin/tc-connect redeem expire  --db ticket_center              # 跑凭证过期作业（issued → expired）
 ./bin/tc-connect stock show  --db ticket_center --supplier-session 1
 ./bin/tc-connect variant feed    --db ticket_center --channel 1   # 先看哪一天有售价（下面 <日期> 从这里取）
 ./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 --qty 2 --date <日期>
