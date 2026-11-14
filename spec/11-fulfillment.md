@@ -7,7 +7,7 @@
 
 ### 4.9 履约侧不变量（55-60，2026-11-07 补充）
 
-履约侧的门禁单独住在 `v_invariant_checks_fulfill` 里，
+履约侧的门禁单独住在 `v_invariant_checks_fulfill_flat` 里，
 拆开住的理由同上：不把已有条目抄一遍。
 
 | # | 不变量 |

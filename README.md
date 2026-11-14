@@ -332,6 +332,7 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 | [`docs/schema-design.md`](docs/schema-design.md) | SQL / 半 SQL / NoSQL 选型论证、表清单、**变体模型（§5）**、**库存预占（§17）**、**有效期（§18）**、**组合映射（§20）**、演进路线 |
 | [`docs/connector-contract.md`](docs/connector-contract.md) | 供应源接入端口、错误四分类、幂等重试、七源差异矩阵、**§9 接入层实现现状** |
 | [`docs/integrations.md`](docs/integrations.md) | **接入层（Go）**：包结构、设计纪律、CLI 用法、拿到授权后的验证清单 |
+| [`docs/review-2026-11-14-normalization.md`](docs/review-2026-11-14-normalization.md) | **交叉评审纪要**（2026-11-14）：7 条缺陷指控的判定与证据、被撤回的主张、实施顺序 |
 | [`db/migrations/`](db/migrations/) | 全部 DDL：冻结的建库基线 + 后续迁移文件（`tc-connect migrate` 应用） |
 | [`db/seed.sql`](db/seed.sql) | 种子数据 |
 | [`db/verify.sql`](db/verify.sql) | 验收查询 + 不变量断言 |

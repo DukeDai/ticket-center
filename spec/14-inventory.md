@@ -8,7 +8,7 @@
 ### 4.12 库存预占侧不变量（69-72，2026-11-07 补充）
 
 售出多少是事实，库存口径只有一处：`fn_available_qty`（可售数的唯一实现）、
-`fn_reserve_qty`（扣减的唯一实现）。门禁住在 `v_invariant_checks_inventory` 里。
+`fn_reserve_qty`（扣减的唯一实现）。门禁住在 `v_invariant_checks_inventory_flat` 里。
 
 | # | 不变量 |
 |---|---|
