@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"strings"
 	"testing"
 
 	"ticket-center/internal/normalize"
@@ -150,6 +151,63 @@ func TestNewSourceProductIsPendingReview(t *testing.T) {
 	}
 	if got := plan.Products[0].Variants[0].Status; got != "pending_review" {
 		t.Errorf("源变体状态 = %q，期望 pending_review", got)
+	}
+}
+
+// TestEmptyExternalIDIsRejected 外部标识是空的源商品，当场报错，不落。
+//
+// 不变量 128「不许有匿名商品」：external_id 是幂等锚点的一半，
+// 空标识落进库，这一行当场违反 128 —— 而唯一键
+// (supplier_id, external_id) 恰恰拦不住它（两行都合法）。
+//
+// 空标识从哪来：归一化的 id 路径取不到值时 toString(nil) 给的是 ""。
+// 源侧 schema 变了、报文是部分响应、新源字段名对不上 —— 都会走到这儿。
+//
+// **写之前挡住，而不是让 128 事后抓**：128 变红时你只知道「库里坏了」，
+// 不知道是哪一次同步干的。同步作业当场报错，运维一眼看出是哪个源。
+func TestEmptyExternalIDIsRejected(t *testing.T) {
+	db := testDB(t)
+	sid := supplierIDOf(t, db, "trip_com")
+
+	before := countRows(t, db)
+
+	catalog := sampleCatalog(adultCoverage())
+	catalog.Products[0].ExternalID = ""
+
+	_, err := buildPlan(db, sid, "trip_com", catalog)
+	if err == nil {
+		t.Fatalf("空外部标识的源商品本该报错，却算出了计划")
+	}
+	if !strings.Contains(err.Error(), "外部标识") {
+		t.Errorf("错误信息没说出是外部标识的问题：%v", err)
+	}
+
+	// 一行都不许落。
+	after := countRows(t, db)
+	for _, tbl := range []string{
+		"supplier_product", "supplier_variant", "supplier_variant_mapping",
+		"supplier_price_calendar", "product_mapping",
+	} {
+		if after[tbl] != before[tbl] {
+			t.Errorf("%s 落了 %d 行 —— 报错之前不该有任何写入", tbl, after[tbl]-before[tbl])
+		}
+	}
+}
+
+// TestEmptyVariantExternalIDIsRejected 外部标识是空的源变体，同样当场报错。
+func TestEmptyVariantExternalIDIsRejected(t *testing.T) {
+	db := testDB(t)
+	sid := supplierIDOf(t, db, "trip_com")
+
+	catalog := sampleCatalog(adultCoverage())
+	catalog.Products[0].Variants[0].ExternalID = ""
+
+	_, err := buildPlan(db, sid, "trip_com", catalog)
+	if err == nil {
+		t.Fatalf("空外部标识的源变体本该报错，却算出了计划")
+	}
+	if !strings.Contains(err.Error(), "外部标识") {
+		t.Errorf("错误信息没说出是外部标识的问题：%v", err)
 	}
 }
 

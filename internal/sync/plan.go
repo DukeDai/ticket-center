@@ -108,6 +108,28 @@ func dispositionOf(existing map[string]string, externalID, hash string) Disposit
 
 // planProduct 算一个源商品要落的行。
 func planProduct(db *store.DB, supplierID int64, product normalize.Product) (ProductRows, error) {
+	// 外部标识不许为空 —— 空的当场报错，不落。
+	//
+	// 为什么：external_id 是幂等锚点的一半（另一半是 supplier_id）。
+	// 空标识落进库，这一行**当场违反不变量 128**（不许有匿名商品）：
+	// 唯一键 (supplier_id, external_id) 区分不了两个空标识的商品，
+	// 而那条唯一键恰恰拦不住它（两行都合法）。
+	//
+	// 空标识从哪来：归一化的 id 路径取不到值时 toString(nil) 给的是 ""。
+	// 源侧 schema 变了、报文是部分响应、新源的字段名对不上 —— 都会走到这儿。
+	//
+	// **为什么在这里报错，而不是让不变量 128 去抓**：
+	// 128 是**事后**门禁，它只能告诉你「库里已经有一条坏数据」。
+	// 同步作业当场报错，运维一眼看出是哪个源、哪条报文；
+	// 而 128 变红时，你只知道库里坏了，不知道是哪一次同步干的。
+	//
+	// 所以：**写之前挡住**，写完之后再由 128 复查一遍（防别处写进去的）。
+	if strings.TrimSpace(product.ExternalID) == "" {
+		return ProductRows{}, fmt.Errorf(
+			"源商品的外部标识是空的（不变量 128：不许有匿名商品）—— 源侧的商品 id 路径取不到值，"+
+				"多半是报文结构变了或这条是部分响应；这一条不落")
+	}
+
 	rawJSON, err := rawToJSON(product.Raw)
 	if err != nil {
 		return ProductRows{}, err
@@ -127,6 +149,15 @@ func planProduct(db *store.DB, supplierID int64, product normalize.Product) (Pro
 	// 源变体：先算变体行，再算它覆盖住了哪些规范变体。
 	variantIdx := map[string]int{}
 	for _, v := range product.Variants {
+		// 变体的外部标识同样不许为空 —— 同一把尺子（不变量 128 的口径）。
+		//
+		// 变体的幂等锚点是 (supplier_product_id, external_variant_id)，
+		// 空标识同样让那一对唯一键区分不了两个不同的变体。
+		if strings.TrimSpace(v.ExternalID) == "" {
+			return ProductRows{}, fmt.Errorf(
+				"源变体的外部标识是空的（不变量 128：不许有匿名商品）—— "+
+					"源侧的变体 id 路径取不到值；这一条不落")
+		}
 		vrows, err := planVariant(v)
 		if err != nil {
 			return ProductRows{}, err
