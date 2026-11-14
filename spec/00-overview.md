@@ -67,19 +67,27 @@
 源 API / 源推送
    └─> 接入层（Go：cmd/tc-connect + internal/：凭证 → 请求 → 四分类 → 重试 → 归档）
         └─> supplier_raw_payload（原文归档，可回放，落库前脱敏）
-             └─> supplier_product（源商品原样落库）
-             ├─> supplier_ticket_type（源票种）
-             ├─> supplier_variant（源变体：固定组合 SKU / 参数化售卖方案）
-             ├─> supplier_session（源场次）
-             └─> supplier_price_calendar（源成本价日历，按 源变体×规范变体×日期）
-                    └─> product_mapping（归一化到规范商品）
-                         └─> product（规范商品）
-                              ├─> product_variant（可售单元：人群 × 票种 × 园区范围 × 加购件）
-                              │      └─> supplier_variant_mapping（覆盖语义：谁能履约这个组合）
-                              ├─> product_session（规范场次）
-                              │      └─> product_session_source（哪些源能供这个场次）
-                              └─> ticket_type（规范票种，人群维度的锚）
+             └─> 同步落库写者（internal/sync，入口 tc-connect jobs：幂等 upsert，退役不删）
+                  └─> supplier_product（源商品原样落库）
+                  ├─> supplier_ticket_type（源票种）
+                  ├─> supplier_variant（源变体：固定组合 SKU / 参数化售卖方案）
+                  ├─> supplier_session（源场次）
+                  └─> supplier_price_calendar（源成本价日历，按 源变体×规范变体×日期）
+                       └─> product_mapping（归一化到规范商品）
+                            └─> product（规范商品）
+                                 ├─> product_variant（可售单元：人群 × 票种 × 园区范围 × 加购件）
+                                 │      └─> supplier_variant_mapping（覆盖语义：谁能履约这个组合）
+                                 ├─> product_session（规范场次）
+                                 │      └─> product_session_source（哪些源能供这个场次）
+                                 └─> ticket_type（规范票种，人群维度的锚）
 ```
+
+**规范层与源层的主数据来源不同**（§5.27 第三条）：
+规范层是**人工撰写的**（`product` / `product_variant` / `product_session` 是我们的商业定义，
+源侧不报这个组合），源层是**从源报文机器推导出来的**（源侧报什么就是什么）。
+衔接处是 `product_mapping` —— 那是**判断**，不是推导。
+同步作业只做机器能做的判定：源侧报了一个我们目录里没有的东西，
+它落成 `pending_review`，**不替人决定它该对应哪个商品**。
 
 ### 3.2 售前（Search / Detail）
 
