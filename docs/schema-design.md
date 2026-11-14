@@ -170,7 +170,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 不变量 44 把币种守住（售价行的币种必须等于该行的结算币种）；
 不变量 45 把汇率留痕守住（留痕日期能独立复算出同一个折算因子）。
 
-**口径细节**（完整规则见 `SPEC.md` §4.6）：
+**口径细节**（完整规则见 [`spec/09-pricing.md` §4.6](../spec/09-pricing.md)）：
 
 | 环节 | 口径 |
 |---|---|
@@ -237,7 +237,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 ### 4.17 营销域（3）
 `cart` · `cart_item` · `coupon_redemption`
 
-### 4.18 视图（条数跑 `make counts`）
+### 4.18 视图（61）
 
 | 视图 | 回答什么问题 |
 |---|---|
@@ -252,15 +252,17 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 全部业务不变量有没有被破坏？（各主题视图的并集；分组与条数见 SPEC.md §4，条数跑 `make counts`） |
+| `v_invariant_checks` | 全部业务不变量有没有被破坏？（各主题视图的并集；分组与条数见 [`SPEC.md`](../SPEC.md) §4，条数跑 `make counts`） |
 | `v_invariant_checks_core_flat` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
 | `v_invariant_checks_fulfill_flat` | 履约侧 6 条有没有被破坏？（支付、预订、出券与订单履约状态一致性） |
 | `v_invariant_checks_refund` | 退款侧 4 条有没有被破坏？（退款金额、已退款订单的事实与状态一致性） |
+| `v_invariant_checks_refund_policy` | 退款承诺侧 3 条有没有被破坏？（发起时的承诺快照还在、金额等于快照里的应付额、快照的四个键齐全） |
 | `v_invariant_checks_redemption` | 核销侧 4 条有没有被破坏？（已核销必有成功记录、一张券最多成功一次、额度用尽且账对得上、核销在有效期内） |
 | `v_invariant_checks_inventory_flat` | 库存预占侧 4 条有没有被破坏？（每条明细有预占、量对得上、可售数没被扣两遍） |
 | `v_invariant_checks_validity_flat` | 有效期侧 3 条有没有被破坏？（口径不歧义、券不短于承诺、卖出去的源覆盖得住） |
+| `v_invariant_checks_source_validity` | 源侧兑现窗口侧 1 条有没有被破坏？（卖出去的订单用的源，兑现的有效期窗口不得短于规范侧承诺） |
 | `v_invariant_checks_readmodel` | 读模型侧 6 条有没有被破坏？（读模型不与主数据分叉、日历有效期终点不被算错、组合的有效期 = 成分窗口的并集、组合构成不与主数据分叉、组合的格子带价格） |
 | `v_invariant_checks_composition` | 组合映射侧 4 条有没有被破坏？（成分同源、成分覆盖得住、两侧数量一致、组合不许直接挂源映射） |
 | `v_invariant_checks_combo_flat` | 组合售卖侧 7 条有没有被破坏？（成分属于本明细的商品、明细成本 = Σ 成分单价 × 数量、出票张数 = 配方数量 × 份数、成分同源且与明细一致、成分票额够用、同一源 SKU 只订一次、预订与成分双向对齐） |
@@ -624,7 +626,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 
 ### 10.3 迁移里放了什么
 
-文件数见 `make counts`（下面这张表每个迁移一行）：
+目前有十九个文件：
 
 | 文件 | 内容 | 为什么它是迁移而不是种子 |
 |---|---|---|
@@ -651,13 +653,18 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `021_variant_supply_forms.sql` | `v_variant_declared_forms` + `v_variant_supply_forms` 两个视图 + `v_invariant_checks_supply_forms_021` + `v_invariant_checks` 重建（不变量 102-104 新增） | 017 / 020 把套装走到了成交，但读侧还差一环：`v_variant_routing_candidates` 与 `v_variant_source_coverage` 走 `fn_route_candidates`，而它只建模方向 A —— **配方与套装的可售单元在那些视图里一行都没有**。不是它们不卖，是读侧看不见它们在卖。看不见的后果不是少一行，是看不懂：同一个商品下两个几乎一样的家庭套餐交付同样的内容，哪个在卖、卖不卖得掉、差在哪，运营侧一个都答不上来。对照视图把三种形态并排放在一张表上（见 §27） |
 | `022_supply_form_shrink_guard.sql` | `fn_combo_components()` / `fn_bundle_components()` 整体替换（成分行不因源 SKU 下架而消失：源的可用性从「决定这一行在不在」改成「决定这一行有没有价」）+ `v_variant_supply_forms` 整体替换（形态行留着，缺口点名「源 SKU 已下架」，残缺套餐不许报成本）+ `v_invariant_checks_supply_form_shrink_022` + `v_invariant_checks` 重建（不变量 105-107 新增） | 成分解析时写的是 `JOIN supplier_variant ... AND status = 'active'`：源侧把某个 SKU 下架时，那一行直接消失。配方于是静悄悄地变成了一个更小的套餐 —— 少一个成分就按剩下的成分重新定价（收 3 份入场的钱，出 1 份票），C 端构成读模型还写着 2 个成分 / 3 份入场，读侧与写侧分叉；套装的形态行则整个从对照视图里消失 —— 不是「卖不掉」，是「看不见」。源下架是事实，改不了源侧，但缺一个成分的套餐不是这个套餐（见 §28） |
 | `023_supply_source_count.sql` | `fn_variant_supply_source_count()` 新增（几个源能供这个可售单元：单张按路由选出的源、配方按成分的源 SKU、套装按整套那个 SKU）+ `fn_refresh_read_models()` / `fn_sync_combo_calendar()` 整体替换（日历格子的 `source_count` 改走这个函数）+ `v_invariant_checks_supply_source_count_023` + `v_invariant_checks` 重建（不变量 108 新增） | 日历的 `source_count` 原本只在单张形态上算得对：刷新作业数的是「源映射 × 当天的源侧报价」的行数，而配方与套装按设计没有源映射（不变量 81），于是它们的格子一律是 0。0 的意思是「一个源都供不了」，而这些组合在对照视图里明明 `can_fulfil = true`、`supplier_count = 1`、售价也摆着 —— C 端读到的是一个在卖的套餐被说成没有供给。取舍写在这里：**源数不是成分数**（2 份成人 + 1 份儿童是 3 个成分、1 个源）、**不是价格行数**；单张按路由算（选源与定价同源）；日历的 `source_count`（这一天能供几个）与对照视图的 `supplier_count`（这个形态由哪几个源组成，源下架了也还数着）是两件事，不混 |
-| `024_reassign_order_item.sql` | `fn_reassign_order_item()` 新增（改派的唯一实现：重新选源 + 重新定价，源与价都取自 `fn_price_variant`）+ `v_reassign_candidates` 视图（哪些明细跟当前世界对不上、差在哪）+ `v_invariant_checks_reassign` + `v_invariant_checks_order_004` 留底 + `v_invariant_checks` 重建（不变量 109-112 新增，54 修订） | 一条明细在下单之后、支付之前跟当前的世界对不上了：源侧下架、报价变了、出现了更便宜的源，明细还钉在原来的源和原来的价上 —— 按旧价卖出去的东西要么出不了票，要么按一个已经过期的价卖。取舍写在这里：**改派 = 重新选源 + 重新定价**（源与价都取自定价函数的唯一实现）；**只发生在未收款未预订的单张形态上**；**成分行与库存预占跟着源走** —— 只改明细就是「按 A 源的价格卖、按 B 源出票」「按新源卖、按旧源占库存」；**留痕写进明细快照**，下单时的定价快照保持冻结 |
+| `024_reassign_order_item.sql` | `fn_reassign_order_item()` 新增（改派的唯一实现：重新选源 + 重新定价，源与价都取自 `fn_price_variant`）+ `v_reassign_candidates` 视图（哪些明细跟当前世界对不上、差在哪）+ `v_invariant_checks_reassign` + `v_invariant_checks` 重建（不变量 109-112 新增，54 修订） | 一条明细在下单之后、支付之前跟当前的世界对不上了：源侧下架、报价变了、出现了更便宜的源，明细还钉在原来的源和原来的价上 —— 按旧价卖出去的东西要么出不了票，要么按一个已经过期的价卖。取舍写在这里：**改派 = 重新选源 + 重新定价**（源与价都取自定价函数的唯一实现）；**只发生在未收款未预订的单张形态上**；**成分行与库存预占跟着源走** —— 只改明细就是「按 A 源的价格卖、按 B 源出票」「按新源卖、按旧源占库存」；**留痕写进明细快照**，下单时的定价快照保持冻结 |
 | `025_source_quantity_limits.sql` | `fn_source_quantity_limits()` 新增（源价行上 `min_qty` / `max_qty` 的唯一读法，键是「源变体 × 规范变体 × 日期」，与选源同一把键）+ `fn_qty_servable()` 新增（接不接得住这个份数的唯一判定）+ `fn_place_order()` / `fn_reassign_order_item()` 各整体替换一次（落单与改派都守这条）+ `v_invariant_checks_qty_limits` + `v_invariant_checks` 重建（不变量 113-115 新增） | 源价行上的「最少 6 人成团 / 单笔上限 40 份」这一对整数以前全库没有一处读它 —— 客户买 1 张按团价的票，系统按整团价收了 1200，源侧因为不足 6 人直接拒单：钱收了、票出不来。取舍写在这里：**区间是源侧的一手事实，唯一读法是一个函数**；**份数的单位 = 源侧的售卖单位**（单张按人 = 份、按团 = 人、套装 = 套、配方 = 该源 SKU 的份数）—— 按团报价的团总价只在人数达标时成立；**同一个源 SKU 顶多个成分时比这个 SKU 的总份数**（参数化源里成人与儿童是同一个 SKU，源侧收到的是一条预订里的总份数，按成分各判各的会漏掉「合起来超上限」）；**不按份数换源**（换了源就是另一个价，而售价行没有份数维度 —— 要按份数换源得给价格加阶梯，是另一个增量）；**改派也守这条**（新源接不住就不改派）；**区间记进明细快照**（源侧后来改了他的成团人数，我们这边记的是当时那一版） |
 | `026_reassign_candidates_cost_basis.sql` | `fn_unit_amount()` 新增（总价 → 单位价的唯一实现：按团报价按人分摊并保留两位小数，按人计价原样返回）+ `fn_place_order()` / `fn_reassign_order_item()` 各整体替换一次（写路径不再自己写一遍 CASE）+ `v_reassign_candidates` 整体替换一次（成本与价格的比较改走同一口径）+ `v_invariant_checks_reassign_basis` + `v_invariant_checks` 重建（不变量 116-118 新增） | 按团报价的源价行给的是团总价 / 团成本（整团 1200 / 1100），明细里记的单位价与单位成本是分摊到人的（171.43 / 157.14）。待改派清单比售价时做了分摊、比成本时却直接拿团成本和人均成本比 —— 1100 ≠ 157.14，于是每一条按团报价的未收款明细都被说成「成本变了」；写路径的分摊一直是对的，真去改派函数自己返回 `no_change`：**清单说的与写路径做的不一样，清单就不可信**。取舍写在这里：**总价 → 单位价只有一个实现**（写路径与读路径都调 `fn_unit_amount`，不各写一遍 CASE）；**按团的人均只是分摊，不是价**（团总价与人数不成正比，人均那一份不许拿去和按人计价的单价比）；**明细里记的是分摊后的数**，团总价与团成本留在快照里（`detail_snapshot->'group_total'` / `->'cost_price'`），对账时看的是当时的团价不是今天的；**清单与写路径必须同口径**（清单说「成本变了」，按人均口径算也必须真的变了） |
 | `027_hold_ttl_default.sql` | `fn_hold_inventory()` 整体替换一次（函数开头把 `p_ttl_seconds` 归一：`COALESCE(p_ttl_seconds, 900)`；哈希与 `expires_at` 都用归一后的值）+ `v_invariant_checks_hold_ttl` + `v_invariant_checks` 重建（不变量 119 新增） | `tc-connect hold create` 不带 `--ttl`（README 自己给的示例命令）**跑不通**：`null value in column "request_hash" ... violates not-null constraint`。根因是 PostgreSQL 的 `DEFAULT` 只在**省略实参**时生效，显式传 `NULL` 拿到的是 `NULL` —— Go 侧把「没指定」编码成 `NULL`，`NULL` 顺着哈希链把 `idempotency_record.request_hash` 撑成 `NULL`。取舍写在这里：**默认值住在库里，不住在调用方**（任何调用方省略 TTL 或传 `NULL`，拿到的都是同一个 900；默认值写在调用方 = 每多一个调用方就多一份默认值，三处总有一处忘了改）；**`DEFAULT` 不是归一**（凡是「参数可以不给」的函数，归一都得在函数体里显式写）；**幂等口径不变**，但不指定与指定 900 现在落同一张预占（同一个 hash），同键异内容仍当场报错 |
 | `028_voucher_expiry.sql` | `fn_expire_vouchers()` 新增（凭证过期作业：把 `valid_to` 已过的 `issued` 券推进到 `expired`，幂等、限批 `p_limit` 默认 500、按 `valid_to, id` 排序）+ `fn_delivered_voucher_statuses()` 新增（`issued` / `used` / `expired` = 交付过，唯一读法）+ `fn_apply_order_fulfillment()` / `fn_reassign_order_item()` / `fn_issue_voucher()` 各整体替换一次（「交付过」的判定改走共享谓词）+ `v_voucher_expiry_overdue` 视图（作业漏跑看得见，但不挡门禁）+ `v_invariant_checks_voucher_expiry` + `v_invariant_checks` 重建（不变量 120-121 新增） | 核销路径刻意只落核销记录、不改券状态（「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改」），兑现它的那一半一直缺着：券的有效期过了，券的状态还停在 `issued`，两个地方说的不是同一件事。更要命的是**「交付过」的口径漏了 `expired`** —— 库里到处用 `status IN ('issued','used')` 表示「这张票给过客户」，而 `expired` 同样表示交付过；不改的话，券一过期，订单的履约状态会翻成未履约、已出票的明细会变成可改派（一次交付两次出票）。取舍写在这里：**交付过 = `issued` / `used` / `expired`**（`void` / `refunded` 才是「没交付」或「收回」），一个共享谓词读，不在五处各写一遍 IN 列表；**判据是券自己的 `valid_to`**（不是订单日期、不是可售单元的承诺）；**只动 `issued`**（`used` / `void` / `refunded` 是另外几条事实）；**作业只 UPDATE 不自己插事件**（`trg_voucher_status_event` 自动落 `VoucherExpired`）；**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态不是数据违规）；**作业不碰订单状态**（`fulfillment_status` 是推导值） |
 
-| `029_flatten_invariant_views.sql` | 五个压平视图 `v_invariant_checks_core_flat` / `inventory_flat` / `validity_flat` / `combo_flat` / `fulfill_flat` 新增（每条链的最终层就地改写成自包含视图，链上的基线内容内联进去）+ `v_invariant_checks` 改指向这五个（其余 17 段原样不动）+ 17 个被取代的中间层视图删除（`*_base` / 中间层 / `*_017` / `v_invariant_checks_supply` / `v_invariant_checks_variant` / `v_invariant_checks_order_004`） | 门禁 `v_invariant_checks` 是一条 UNION ALL，每段由一个迁移拼上去；改口径时**旧的那段没被删**，只是没人再往并集里 UNION 它，于是链变成 `supply -> variant -> core_base -> core -> core_017` 这样的五层。于是库里躺着 17 个「看起来在守门禁、其实只是链路中间层」的视图：读的人得顺着五层依赖才能看清一条门禁到底在算什么，改一条口径要在五层里找它在哪层被改写。取舍写在这里：**能删是因为门禁的身份是 `check_name` 不是视图对象** —— 压平视图逐行复刻最终层的结果，`v_invariant_checks` 换过去后行数、check_name、expected、actual 逐行一致（实测 121 行 / 121 个 check_name / 0 条 `actual > 0`，改动前后的快照 `EXCEPT ALL` 双向为空）；**这次只重排对象，不改门禁口径**（一条不变量都没加、没删、没改）；**删的顺序是「先上层后下层」**，不用 CASCADE（依赖还在就报错，不静默连坐）。压平时的**列序**这一步出过事故，值得写下来：每层的基线读法有两种形状 —— 3 列（`seq, check_name, actual`）或 4 列（`seq, check_name, expected, actual`），压平后的 CTE 声明四列，基线读法必须按**规范列序**投影（源视图是 3 列时写 `seq, check_name, 0, actual`）；照着源视图的位置顺序写（`seq, check_name, actual, 0`）会把 `actual` 顶进 `expected` 槽、把 `actual` 写成 0 —— **继承来的违规被静默吃掉**。这类错在「所有 actual 都是 0」的干净库里查不出来（0 和 0 相等），只有真的造一条违规、门禁必须报红时才暴露，所以回归测试必须造违规而不是只看干净库全绿 |
+| `029_flatten_invariant_views.sql` | 五条不变量链的最终层各压成一个自包含视图：`v_invariant_checks_core_flat` / `_inventory_flat` / `_validity_flat` / `_combo_flat` / `_fulfill_flat`；链上的 17 个中间层视图（`*_base` / 中间层 / `*_017` / `v_invariant_checks_order_004`）全部 `DROP VIEW`；`v_invariant_checks` 重建为 22 个分支的 `UNION ALL` | 门禁的分组视图越叠越多（22 个视图、17 个中间层），改一条不变量要跨两层视图找它住在哪，中间层还留着「上一版口径」的留底 —— 三条链各有两代口径并排躺在库里，读的人得先猜哪一版是活的。取舍写在这里：**每条链只留最终层，自包含**（压平后一个视图就是一条链的全部）；**门禁的身份是 `check_name`，不是视图对象** —— 压平不改条数、不改口径、不改 `db/verify.sql` 的任何断言；**不留「上一版口径」的留底视图**（留底视图不是历史，是分叉 —— 有人会照着留底改，然后改错地方） |
+| `030_source_validity_window.sql` | `supplier_variant` 加 `valid_days` 列（源侧肯兑现的有效期窗口，`NULL` = 源侧没报）+ `fn_route_candidates()` 整体替换一次（候选集多一条判据：源侧报了天数且短于规范侧承诺 → 这个源不进候选）+ `v_variant_source_validity` 视图（源变体与规范变体的有效期窗口对照 + 缺口原因）+ `v_invariant_checks_source_validity` + `v_invariant_checks` 重建（不变量 122 新增） | 规范侧承诺 2 天、源侧只兑现 1 天，这个源照样赢下选源：按它的价卖出去，出的券只管一天，客户第二天到门口闸机判 expired —— 钱收了、票买了、门不认。取舍写在这里：**规范侧的承诺与源侧的兑现是两件事，落在两处**（承诺在 `product_axis_option.valid_days`，兑现在 `supplier_variant.valid_days`）；**源侧没报不拦**（源侧没给约束 = 不拦，与硬约束 34 同一条口径）；**方向是收紧不是放宽**（源报 1 天、承诺 2 天 → 这个源不进候选，不许被提升成两日票的供货）；**与套装形态同源**（`supplier_variant_bundle.valid_days` 盖不住成分窗口时套装判不可售，单张形态现在补上这条）；**已卖出的订单走退款**，不改写历史 |
+| `031_routing_validity_gate.sql` | `v_invariant_checks_source_validity` 整体替换一次（加一条候选集侧的分支）+ `v_invariant_checks` 重建（23 个分支，不变量 123 新增） | 030 把源侧的兑现窗口接进了选源，但**那条判据当时只有一个事后的门禁**（不变量 122 读已卖出的订单）。判据本身写错了（或者被人改回旧版本）时，系统照样卖得出去 —— 只是卖的时候用了兑现不起的源；等真下单了 122 才红，那时候钱已经收了。取舍写在这里：**事前事后各一条门禁**（122 读 `sales_order_item` + `booking`，123 读路由视图，走不同的表，任何一条失效都不会让另一条一起绿）；**只加门禁不改判据**（候选集怎么算在 030 里定死了，031 不动它） |
+| `032_refund_policy_enforcer.sql` | `fn_refund_policy()` 新增（退款承诺的唯一读法与执行者：读 `product.refund_policy` 与 `channel_listing.refund_policy_override` 逐字段合并、按场次算截止点、算出这一单的应付退款额）+ `fn_request_refund()` / `fn_approve_refund()` 各整体替换一次（发起与放行各判一遍承诺，金额按应付额而不是订单实付比）+ `v_invariant_checks_refund_policy` + `v_invariant_checks` 重建（24 个分支，不变量 124-126 新增） | 规范侧写了退款承诺（可退 / 截止时长 / 手续费比例），但**没有人执行它**：写路径拿 `p_amount` 与 `sales_order.total` 比 —— 承诺说有 10% 手续费，实际退给客户的是全额，承诺形同不存在。取舍写在这里：**承诺与执行者是两件事，各自只有一个读法**（承诺住 `product.refund_policy`，执行者是 `fn_refund_policy`）；**金额是净额**（`sales_refund.amount` = 实退给客户的钱 = 实付 × (1 − fee_percent)；手续费是另一次收款，不是退款项的一部分）；**发起与放行各判一次**（发起到放行之间时间在走，截止时长会被吃掉 —— 发起时距开场 50 小时、放行时距开场 30 小时，这一笔在放行时就该被挡下）；**资格取最严、手续费按明细金额加权**（任一商品不可退 ⇒ 整单不可退；截止时长取最大的；手续费比例按各明细 `total_price` 加权，按人头平均是错的）；**截止点取最早的场次**（参照 `product_session.start_at`，没有就退到 `session_date`）；**取不到参照点就不拦**（不知道截止时间不等于已过截止时间）；**承诺快照四件套**（`refundable` / `cutoff_hours` / `fee_percent` / `expected_amount`，抄进 `sales_refund.raw_payload->'policy'`，承诺会变，这笔当初按哪一版算的必须查得到） |
+| `033_refund_payload_merge.sql` | `fn_complete_refund()` 整体替换一次（`raw_payload` 改成合并而不是覆盖：`raw_payload = raw_payload || v_callback`，且回调报文不许带 `policy` 键） | `fn_complete_refund` 原来两处写 `raw_payload = COALESCE(p_raw_payload, raw_payload)`：一是 `p_raw_payload` 的默认值是 `'{}'::jsonb` 不是 NULL，**COALESCE 从来不兜底**；二是覆盖不是合并。一次不带回调报文的退款完成调用，就把发起时写下的承诺快照洗成空对象 —— 不变量 62 / 124 / 126 复查的正是「退款金额与承诺快照的对照」，右边被洗成 0，已退款的订单全部报违规。取舍写在这里：**按 018 的先例合并而不是覆盖**（同一件事在预订请求报文上已经修过一次）；**回调报文不许盖掉承诺事实**（`policy` 是我们写下的，渠道报文串了字段不该让我们的事实被改写，所以合并前先摘掉右边的 `policy`） |
+| `034_sync_invariants.sql` | `v_invariant_checks_sync` 新增（同步落库侧不变量 127-133：源层不许有孤儿行 / 匿名商品；待审核的事实不许漏进可用路径）+ `v_invariant_checks` 重建（26 个分支，不变量 127-133 新增） | 同步作业是**源层的唯一写者**（`internal/sync`），而这一组门禁守的是「它不许把事实写坏」：源层的每一行都必须能追到一个源商品，源商品必须能追到一个源 —— 孤儿行是同步写了一半崩掉的残留，它不属于任何源，却能被 `supplier_variant_mapping` 引用，于是「这个可售单元由谁履约」这个问题有一个指向空处的答案。取��在这里：**孤儿与匿名是结构性的**（外键 + NOT NULL 已经有了），门禁守的是「别让某次迁移把它们放松掉」，以及「别让一条 NULL 或空串绕过去」——`supplier_product` 的唯一键是 `(supplier_id, external_id)`，外部标识为空时这一对唯一键**不区分两个不同的商品**，重放一次同步就多落一行同名空标识的商品，而那条唯一键恰恰拦不住它（两行都合法）；**132-133 守的是「没审核就上架」**——`pending_review` 是给「机器认出来了但人还没认」的事实准备的中间态，一个还等着人看的源商品不许已经挂在规范商品上卖，一个还等着人看的映射不许已经声明「这个源能履约这个可售单元」（`fn_route_candidates` 只认 `active` 的映射）；**133 的父级是哪一行**：变体映射指向的规范变体属于哪个规范商品，那个商品的商品映射（对同一个源商品）就是它的父级 —— 不是「这个源商品的所有商品映射」，那会把别的商品对的待审核状态算到这一对头上，误报一条门禁；**分支清单不在迁移里手抄**（手抄一遍，下一个人加新分支时漏改一处，`v_invariant_checks` 就少一条门禁，而少的那条永远不会有人发现，因为它从来没红过） |
 
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
 否则刷新完自己被判成漂移 —— 这条约束由 `internal/readmodel` 的测试守着
@@ -672,7 +679,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 
 ## 11. 交易侧状态机：规则住在库里
 
-状态机以前只活在 `SPEC.md` 的图里。库里没有任何东西拦着「订单从 paid 直接跳 fulfilled」，
+状态机以前只活在 [`spec/00-overview.md`](../spec/00-overview.md) 的图里。库里没有任何东西拦着「订单从 paid 直接跳 fulfilled」，
 所以这件事必须由机制保证。
 
 ### 11.1 一张表装下合法流转
@@ -706,7 +713,7 @@ HINT:  合法流转见 state_transition 表与 SPEC.md §5；不允许跳过中�
 
 - **谁都绕不过去。** Go、psql、脚本、手工改库走同一条路；放应用层只挡得住走应用层的写入。
 - **状态与事件不分家。** 事件是状态变化的副产品，不是调用方的额外责任。
-- **改状态机不用发版。** 加一条合法流转 = 往 `state_transition` 插一行 + 同步 `SPEC.md` §5。
+- **改状态机不用发版。** 加一条合法流转 = 往 `state_transition` 插一行 + 同步 [`spec/00-overview.md`](../spec/00-overview.md) §5。
 
 代价是这张表得有人维护。所以它同时是不变量 46-49 的对象：
 「状态必须能从初始状态走到」保证表里的边自洽（不会有一条孤立的边让人永远走不到）。
@@ -728,10 +735,10 @@ CREATE VIEW v_invariant_checks AS
 
 改名而不抄一遍，是为了让「新增一条不变量」的成本等于「新增一个视图里的一个 UNION 项」。
 
-> 上面写的是当时的做法。后来这条链被压平了（`db/migrations/029_flatten_invariant_views.sql`）：
-> 每条链的最终层压成一个自包含视图（`*_flat`），链上的中间层（`*_base` / 中间层 / `*_017`）
-> 全部删掉。压平后库里不再有 `v_invariant_checks_core`，只有 `v_invariant_checks_core_flat`。
-> 门禁的身份是 `check_name`，不是视图对象，所以压平不改门禁条数与口径。
+上面写的是当时的做法。后来这条链被压平了（`db/migrations/029_flatten_invariant_views.sql`）：
+每条链的最终层压成一个自包含视图（`*_flat`），链上的中间层（`*_base` / 中间层 / `*_017`）
+全部删掉。压平后库里不再有 `v_invariant_checks_core`，只有 `v_invariant_checks_core_flat`。
+门禁的身份是 `check_name`，不是视图对象，所以压平不改门禁条数与口径。
 
 ## 12. 下单写路径：写规则住在库里
 
@@ -915,20 +922,81 @@ CREATE VIEW v_invariant_checks AS
 
 | 函数 | 职责 | 关键口径 |
 |---|---|---|
-| `fn_request_refund()` | 发起退款 | 整单退款；金额必须等于订单实付；幂等键必填；订单推进到 `refunding` |
-| `fn_approve_refund()` | 人工放行 | 订单状态不动（钱还没回来） |
-| `fn_complete_refund()` | 落退款结果 | 成功时一次改完事实与订单；失败时订单照原状态退回去 |
+| `fn_refund_policy()` | 退款承诺的唯一读法与执行者 | 读承诺、算截止点、算这一单的应付退款额；纯读函数 |
+| `fn_request_refund()` | 发起退款 | 整单退款；金额必须等于按承诺算出的应付退款额；幂等键必填；订单推进到 `refunding` |
+| `fn_approve_refund()` | 人工放行 | 订单状态不动（钱还没回来）；放行时重判一遍承诺 |
+| `fn_complete_refund()` | 落退款结果 | 成功时一次改完事实与订单；失败时订单照原状态退回去；报文合并而不是覆盖 |
 
-### 15.1 退款金额必须等于订单实付
+### 15.1 退款金额必须等于按承诺算出的应付退款额
 
-`fn_request_refund` 拿 `p_amount` 与 `sales_order.total` 比，不等就报错。
+`fn_request_refund` 拿 `p_amount` 与 `fn_refund_policy` 算出的应付额比，不等就报错。
 少退客户会投诉，多退公司自己承担 —— 这条要在写路径上挡，
 不能等对账时才发现少退了多少。
+
+**应付额是净额，不是订单实付。** 有手续费承诺时两者不等：
+
+```
+应付退款额 = 订单实付 × (1 − fee_percent)
+```
+
+`sales_refund.amount` 是**实退给客户的钱**。手续费本身是我们另收的一笔
+（源侧不退手续费），它记在承诺快照里，不是退款项的一部分。
+`settlement_line.fee_amount` 是源侧结算手续费，和这个也不是一件事。
+
+**承诺快照四件套。** 发起退款时把当时的承诺抄进
+`sales_refund.raw_payload->'policy'`：
+
+| 键 | 含义 |
+|---|---|
+| `refundable` | 这一单承诺可不可退 |
+| `cutoff_hours` | 承诺的截止时长（小时） |
+| `fee_percent` | 承诺的手续费比例 |
+| `expected_amount` | 当时的应付退款额 |
+
+抄下来是因为承诺会变 —— 商品改政策、渠道改覆盖之后，
+这笔退款当初是按哪一版算的必须查得到。
+
+**多个商品的单子怎么合成一条承诺。** 资格取最严的
+（任一商品不可退 ⇒ 整单不可退；截止时长取最大的那个）；
+手续费比例按各明细的 `total_price` 加权：
+
+```
+fee_pct = round(Σ(total_price × fee_percent) / Σ total_price, 6)
+```
+
+按人头平均是错的 —— 贵的那件商品才是手续费的主要来源。
+
+**截止点取最早的场次。** 参照点是 `product_session.start_at`（没有就退到
+`session_date`），取这一单所有明细里最早的那个。
+一个参照点都取不到时 `has_cutoff_point = false`，**不拦** ——
+不知道截止时间不等于已过截止时间。
+
+**发起与放行各判一次。** 承诺只在发起时判是不够的：
+发起时距开场 50 小时（承诺 48 小时）、放行时距开场 30 小时 ——
+这一笔在放行时就该被挡下。
 
 **行级退款（只退某几行）系统明确拒绝。** 它需要一张
 「优惠券 / 税费 / 折扣怎么摊到每一行」的分摊口径，还需要源侧支持部分取消 ——
 那是业务决策，不是工程决策。在这两样落地之前自己编一条分摊规则，
 就是把一个没人拍板的口径写进代码里。
+
+### 15.1.1 回调报文合并而不是覆盖
+
+`fn_complete_refund` 写 `sales_refund.raw_payload` 时是**合并**：
+
+```sql
+raw_payload = raw_payload || v_callback
+```
+
+`v_callback` 是回调报文摘掉 `policy` 键之后的部分。
+`policy` 是发起时写下的承诺事实 —— 渠道报文撞上这个键是渠道串了字段，
+不是我们要让的事实被改写，所以合并前先摘掉。
+
+覆盖的代价很具体：发起时写进 `raw_payload->'policy'` 的承诺快照被洗成空对象，
+不变量 62 / 124 / 126 复查的「退款金额与承诺快照的对照」右边变成 0，
+已退款的订单全部报违规。也就是说，**一次不带回调报文的退款完成调用，
+就把退款的事实洗没了**。同一件事在预订请求报文上已经修过一次
+（`018_booking_request_payload_merge.sql`），这里是同一个口径的第二次落地。
 
 ### 15.2 「有没有真的收到钱」看支付记录，不看订单状态
 
@@ -2046,3 +2114,95 @@ LEFT JOIN LATERAL (
 - **读侧的候选清单口径变了。** 改口径之前按团明细全部被误报，
   改之后只有真的变了成本的才出现在清单里。清单变短了，
   这是它终于开始说实话。
+
+---
+
+## 32. 源侧的兑现窗口：承诺与兑现是两件事
+
+### 32.1 缺口是什么
+
+规范侧的承诺是**我们卖几天**，源侧的兑现窗口是**源侧肯兑现几天**。
+这是两件事，落在两处。
+
+规范侧那一份已经有地方住（`product_axis_option.valid_days`，见 §18.1）。
+源侧那一份**没有地方住** —— 源侧报了两日票，我们只看到营销标签
+（GlobalTix 的 `passType = 2d`），看不到源侧肯兑现几天。
+
+标签不是兑现。源侧可以写「两日票」而实际只管一天。
+用标签兑现，闸机会判 expired —— 钱收了、票买了、门不认。
+
+### 32.2 列
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `supplier_variant.valid_days` | `INTEGER`（可空，`> 0`） | 源侧肯兑现的天数。`NULL` = 源侧没报 |
+
+由 `030_source_validity_window.sql` 加在 `supplier_variant` 上
+（`ALTER TABLE ... ADD COLUMN`）。
+
+`NULL` 与 0 不是一回事。`0` 会被 CHECK 挡掉，而「源侧没报」不是「源侧报了 0」。
+不许把没报折成 0（一个事实只写一处：报了就报，没报就是没报）。
+
+**这个值不许折进 `raw_payload` 就完事。** 它要被计算（选源时比）、
+要被门禁断言（不变量 122、123），所以它得有自己的类型和约束。
+
+### 32.3 谁写它
+
+归一化作业，从源报文的**兑现窗口字段**取（GlobalTix 的 `validityDays`），
+不是从营销标签字段反推（`passType = 2d` 不等于源侧肯兑现 2 天）。
+
+在 `configs/mapping_rules.json` 里以数值通道声明：
+
+```json
+"numbers": { "valid_days": { "path": "validityDays" } }
+```
+
+通道名与字段名都在配置里，Go 代码里不出现任何源侧分支（硬约束 4、11）。
+
+其余六源的可兑现窗口字段**待商务确认**（硬约束 13）：
+谁报了什么兑现窗口就落什么，没报就是没报，不猜。
+
+### 32.4 唯一读法
+
+| 位置 | 干什么 |
+|---|---|
+| `fn_route_candidates()` | 选源时多一条判据：源侧报了天数且短于规范侧承诺 → 这个源不进候选 |
+| `v_variant_source_validity` | 源变体与规范变体的窗口对照：报了几天、承诺几天、盖不盖得住、缺口理由 |
+
+判据：
+
+```sql
+AND (sv.valid_days IS NULL
+     OR sv.valid_days >= fn_variant_validity_days(p_variant_id))
+```
+
+`NULL` 不拦 —— 源侧没给约束 = 不拦，与硬约束 34（「读不到 = 源侧没给约束 = 不拦」）
+同一条口径。但这条**不许反过来读**：「不知道」不等于「能兑现」，
+也不等于「不能兑现」，它只是没有被约束。
+
+方向是**收紧**不是放宽：源报 1 天、规范侧承诺 2 天时，
+这个源不许被提升成两日票的供货 —— 赢了就是「按 A 源的价格卖、按 B 源的天数出票」。
+
+### 32.5 门禁
+
+| # | 守什么 | 时机 |
+|---|---|---|
+| 122 | 卖出去的订单用的源，兑现窗口不得短于该可售单元承诺的有效期 | 事后（钱已经收了） |
+| 123 | 选源候选集里的源，兑现窗口不得短于该可售单元承诺的有效期 | 事前（还没卖） |
+
+门禁住在 `v_invariant_checks_source_validity` 里。
+
+两条**故意互相独立**：122 读 `sales_order_item` + `booking`，
+123 读路由视图，走不同的表 —— 任何一条判据失效都不会让另一条一起绿。
+
+没有 123 时有一个危险窗口：判据写错了（或者被人改回旧版本），
+系统照样卖得出去，只是卖的时候用了兑现不起的源；
+等真下单了 122 才红 —— 那时候钱已经收了。
+
+### 32.6 卖出去之后不许改写历史
+
+已卖出的订单如果发现用的源兑现窗口短于承诺，走**退款**，
+不是把历史订单改成「当时就不该卖」（与不变量 75 同一条口径）。
+
+源侧把某个源变体下架时也不许改写历史订单 ——
+源下架是事实，改不了源侧，但缺一个成分的套餐不是这个套餐（见 §28）。

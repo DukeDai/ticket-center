@@ -300,12 +300,12 @@ func (s *Server) handleService(w http.ResponseWriter, query map[string]string, b
 	case ICodeDetail:
 		want := map[string]bool{}
 		for _, v := range asList(body["productIDList"]) {
-			want[fmt.Sprintf("%v", v)] = true
+			want[idString(v)] = true
 		}
 		out := []any{}
 		for _, doc := range asList(s.fixture["catalog"]) {
 			d, _ := doc.(map[string]any)["data"].(map[string]any)
-			id := fmt.Sprintf("%v", d["productID"])
+			id := idString(d["productID"])
 			if len(want) == 0 || want[id] {
 				out = append(out, d)
 			}
@@ -314,10 +314,10 @@ func (s *Server) handleService(w http.ResponseWriter, query map[string]string, b
 		return
 
 	case ICodePrice:
-		pid := fmt.Sprintf("%v", body["productID"])
+		pid := idString(body["productID"])
 		for _, doc := range asList(s.fixture["prices"]) {
 			d, _ := doc.(map[string]any)["data"].(map[string]any)
-			if fmt.Sprintf("%v", d["productID"]) == pid {
+			if idString(d["productID"]) == pid {
 				writeOK(w, d)
 				return
 			}
@@ -375,6 +375,32 @@ func writeJSON(w http.ResponseWriter, payload any, status int) {
 func asList(v any) []any {
 	l, _ := v.([]any)
 	return l
+}
+
+// idString 把报文里的一个 id 变成它该有的字符串形状。
+//
+// **不能用 `%v`**：JSON 的数字解出来是 float64，
+// `fmt.Sprintf("%v", 21081935.0)` 给的是 `2.1081935e+07`。
+//
+// 这个坑在这个文件里格外隐蔽：mock 的**两侧**都用 `%v`，
+// 所以它自己跟自己比永远相等 —— 测「详情返回了没有」时看不出来，
+// 而真实的调用方拿 `21081935` 去比 `2.1081935e+07`，
+// 拿到的是「没找到这个商品」。
+func idString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatInt(int64(t), 10)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int:
+		return strconv.Itoa(t)
+	case json.Number:
+		return t.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func numOrString(s string) any {

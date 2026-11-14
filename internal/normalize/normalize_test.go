@@ -195,3 +195,71 @@ func TestCoverageJSONRoundTrip(t *testing.T) {
 		t.Errorf("往返失败：%v", back)
 	}
 }
+
+// 数值事实：源侧报了才进结果，没报就不进 —— 不许折成 0。
+//
+// 「没报」与「报了 0」是两件事：对兑现窗口来说，0 天 = 盖不住任何承诺，
+// 而「没报」= 源侧没给约束 = 不拦。把缺席折成 0 会凭空造出一条假约束。
+func TestResolveNumbersAbsentIsNotZero(t *testing.T) {
+	rules := map[string]NumberRule{"valid_days": {Path: "validityDays"}}
+
+	out := ResolveNumbers(map[string]any{}, rules)
+	if _, ok := out["valid_days"]; ok {
+		t.Errorf("源侧没报就不该有这个事实，得到 %v", out)
+	}
+
+	out = ResolveNumbers(map[string]any{"validityDays": nil}, rules)
+	if _, ok := out["valid_days"]; ok {
+		t.Errorf("null 不该算成已报，得到 %v", out)
+	}
+
+	out = ResolveNumbers(map[string]any{"validityDays": "N/A"}, rules)
+	if _, ok := out["valid_days"]; ok {
+		t.Errorf("非数值不该算成已报，得到 %v", out)
+	}
+
+	out = ResolveNumbers(map[string]any{"validityDays": 2}, rules)
+	if out["valid_days"] != 2 {
+		t.Errorf("valid_days = %d，期望 2", out["valid_days"])
+	}
+}
+
+// 源侧把数字报成字符串时照样认 —— 与 toFloat 同一条口径。
+func TestResolveNumbersAcceptsStringNumber(t *testing.T) {
+	rules := map[string]NumberRule{"valid_days": {Path: "validityDays"}}
+	out := ResolveNumbers(map[string]any{"validityDays": " 2 "}, rules)
+	if out["valid_days"] != 2 {
+		t.Errorf("valid_days = %d，期望 2", out["valid_days"])
+	}
+}
+
+// GlobalTix 的 validityDays 必须真的进到源变体的数值事实里。
+// 这是 GlobalTix 兑现窗口断链的源头：报文里带着这个字段，
+// 但归一化层没有承载它的通道，源侧的值从来没进过系统。
+func TestNormalizeGlobalTixCarriesValidityDays(t *testing.T) {
+	rules, err := LoadRules(rulesPath(t))
+	if err != nil {
+		t.Fatalf("读规则失败：%v", err)
+	}
+	p := filepath.Join("..", "..", "fixtures", "globaltix_catalog.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Skipf("找不到样例报文：%v", err)
+	}
+	res, err := rules.Normalize("globaltix", raw)
+	if err != nil {
+		t.Fatalf("归一化失败：%v", err)
+	}
+	carried := 0
+	for _, v := range res.Variants {
+		if d, ok := v.Numbers["valid_days"]; ok {
+			carried++
+			if d < 1 {
+				t.Errorf("源变体 %s 的 valid_days = %d，期望 ≥ 1", v.ExternalID, d)
+			}
+		}
+	}
+	if carried == 0 {
+		t.Error("GlobalTix 报文里带着 validityDays，但没有一个源变体把它带出来")
+	}
+}

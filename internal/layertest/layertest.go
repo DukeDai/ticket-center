@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -162,7 +163,7 @@ func Run(ctx context.Context, code string, opts Options) *SupplierRun {
 		}
 		return run
 	}
-	pid := fmt.Sprintf("%v", productIDs[0])
+	pid := IDString(productIDs[0])
 
 	// ---- L3 详情
 	detailData, err := port.GetProduct(ctx, pid)
@@ -307,6 +308,36 @@ func missingCredentials(port supplier.Port) []apperr.MissingCredential {
 }
 
 // ---------------------------------------------------------------- 报文提取
+
+// IDString 把报文里的一个 id 变成它该有的字符串形状。
+//
+// **数字 id 不能用 `%v` 渲染**：JSON 的数字解出来是 float64，
+// `fmt.Sprintf("%v", 21081935.0)` 给的是 `2.1081935e+07` ——
+// 那个字符串会当成源侧 id 落进库里，而它跟源侧真正的 id 不是一回事。
+// 幂等锚点（supplier_id, external_id）就废了：
+// 同一个源商品每次同步落成一行新的。
+//
+// 所以数字 id 一律按整数渲染：float64 先转 int64 再转字符串。
+// 整数 id 在 float64 里是精确的（float64 能精确表示到 2^53），
+// 而源侧的 id 远小于这个上限。
+//
+// 非数字（字符串 id）原样返回。
+func IDString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatInt(int64(t), 10)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int:
+		return strconv.Itoa(t)
+	case json.Number:
+		return t.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
 
 // ExtractProductIDs 从目录响应里取产品 id（不写死具体值）。
 func ExtractProductIDs(data []byte) []any {

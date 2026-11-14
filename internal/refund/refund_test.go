@@ -1,6 +1,8 @@
 package refund_test
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,7 +15,9 @@ import (
 )
 
 // 退款的行为约定：
-//   - 退款金额必须等于订单实付（整单退款），少一分多一分都当场拦下；
+//   - 退款金额必须等于**按该单退款承诺算出的应付退款额**（整单退款），
+//     少一分多一分都当场拦下；有手续费承诺时它不等于订单实付；
+//   - 承诺不可退 → 报错；距开场不足 cutoff_hours → 报错（发起与放行各判一次）；
 //   - 幂等键必填：重放一次退款就是多退一次钱；
 //   - 同一个幂等键配不同内容要报错，不能静默返回上一笔；
 //   - 订单状态推进到 refunding 是发起的时候 —— 免得一边退一边出票；
@@ -111,6 +115,37 @@ func paidOrder(t *testing.T, db *store.DB, key string, txn string) *order.Order 
 	return o
 }
 
+// payableAmount 向库问「按承诺该退多少」。
+//
+// fn_refund_policy 是退款承诺的唯一读法 —— 测试也不另算一遍，
+// 免得 Go 侧与库里的口径分叉（那正是这套门禁要防的事）。
+func payableAmount(t *testing.T, db *store.DB, orderID int64) string {
+	t.Helper()
+	s, err := db.Scalar(`SELECT expected_amount::text FROM fn_refund_policy(` + store.Quote(orderID) + `);`)
+	if err != nil {
+		t.Fatalf("读应付退款额失败：%v", err)
+	}
+	if s == "" {
+		t.Fatalf("订单 %d 没有应付退款额", orderID)
+	}
+	return s
+}
+
+// policyRow 读一单生效的退款承诺（fn_refund_policy 是唯一读法）。
+func policyRow(t *testing.T, db *store.DB, orderID int64) map[string]string {
+	t.Helper()
+	rows, err := db.Rows(`SELECT refundable::text, cutoff_hours::text, fee_percent::text,
+                                  expected_amount::text, within_cutoff::text, has_cutoff_point::text
+                             FROM fn_refund_policy(` + store.Quote(orderID) + `);`)
+	if err != nil {
+		t.Fatalf("读退款承诺失败：%v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("订单 %d 读不到退款承诺", orderID)
+	}
+	return rows[0]
+}
+
 // parseInt 解析整数（测试里从库里读出来的 id）。
 func parseInt(s string) int64 {
 	var n int64
@@ -121,6 +156,40 @@ func parseInt(s string) int64 {
 		n = n*10 + int64(c-'0')
 	}
 	return n
+}
+
+// amountCents 把十进制金额文本转成「分」的整数。
+//
+// 用整数分而不是 float64：二进制浮点过一遍就会把 368.00 变成
+// 367.99999999999994，期望值本身就是错的（硬约束 5）。
+func amountCents(t *testing.T, s string) string {
+	t.Helper()
+	raw := strings.TrimSpace(s)
+	neg := strings.HasPrefix(raw, "-")
+	raw = strings.TrimPrefix(raw, "-")
+	intPart, fracPart, _ := strings.Cut(raw, ".")
+	fracPart += "00"
+	if len(fracPart) < 2 {
+		fracPart = fracPart + strings.Repeat("0", 2-len(fracPart))
+	}
+	n, err := strconv.ParseInt(intPart+fracPart[:2], 10, 64)
+	if err != nil {
+		t.Fatalf("金额 %q 不是十进制数", s)
+	}
+	if neg {
+		n = -n
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// formatCents 把「分」的整数还原成两位小数的金额文本。
+func formatCents(cents int64) string {
+	sign := ""
+	if cents < 0 {
+		sign = "-"
+		cents = -cents
+	}
+	return sign + strconv.FormatInt(cents/100, 10) + "." + fmt.Sprintf("%02d", cents%100)
 }
 
 // invariantsGreen 断言全库不变量全绿。
@@ -152,7 +221,7 @@ func TestRefundRequestMovesOrderToRefunding(t *testing.T) {
 
 	res, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		Reason:         "源侧预订失败",
 		RequestedBy:    "ops@test",
 		IdempotencyKey: "RF-KEY-001",
@@ -182,7 +251,7 @@ func TestRefundRequestRequiresIdempotencyKey(t *testing.T) {
 
 	_, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "",
 	})
 	if err == nil {
@@ -194,7 +263,7 @@ func TestRefundRequestRequiresIdempotencyKey(t *testing.T) {
 	invariantsGreen(t, db)
 }
 
-func TestRefundRequestRejectsAmountDifferentFromOrderTotal(t *testing.T) {
+func TestRefundRequestRejectsAmountDifferentFromPayableAmount(t *testing.T) {
 	db := seeded(t)
 	o := paidOrder(t, db, "rf-amt-001", "ALI-RF-AMT")
 	svc := refund.New(db)
@@ -206,9 +275,9 @@ func TestRefundRequestRejectsAmountDifferentFromOrderTotal(t *testing.T) {
 		IdempotencyKey: "RF-KEY-AMT",
 	})
 	if err == nil {
-		t.Fatal("金额与订单实付不符不该放行")
+		t.Fatal("金额与应付退款额不符不该放行")
 	}
-	if !strings.Contains(err.Error(), "退款金额与订单实付不符") {
+	if !strings.Contains(err.Error(), "退款金额与应付退款额不符") {
 		t.Fatalf("报错要说清是金额不符，实际：%v", err)
 	}
 	invariantsGreen(t, db)
@@ -221,7 +290,7 @@ func TestRefundRequestReplayWithSameKeyIsIdempotent(t *testing.T) {
 
 	req := refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		Reason:         "源侧预订失败",
 		RequestedBy:    "ops@test",
 		IdempotencyKey: "RF-KEY-IDEM",
@@ -258,7 +327,7 @@ func TestRefundRequestWithSameKeyDifferentContentIsRejected(t *testing.T) {
 
 	base := refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		Reason:         "源侧预订失败",
 		RequestedBy:    "ops@test",
 		IdempotencyKey: "RF-KEY-HASH",
@@ -288,7 +357,7 @@ func TestRefundRequestOnUnpaidOrderIsRejected(t *testing.T) {
 	// 没收到钱退什么 —— 订单还没付钱。
 	_, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-KEY-UNPAID",
 	})
 	if err == nil {
@@ -307,7 +376,7 @@ func TestRefundApproveMovesRefundToApprovedAndKeepsOrderState(t *testing.T) {
 
 	res, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-KEY-APPROVE",
 	})
 	if err != nil {
@@ -334,7 +403,7 @@ func TestRefundCompleteSuccessRewritesFactsAndOrder(t *testing.T) {
 
 	res, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		Reason:         "源侧预订失败",
 		IdempotencyKey: "RF-KEY-OK",
 	})
@@ -392,7 +461,7 @@ func TestRefundCompleteReplayIsIdempotent(t *testing.T) {
 
 	res, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-KEY-REPLAY",
 	})
 	if err != nil {
@@ -433,7 +502,7 @@ func TestRefundCompleteFailureRestoresOrderToPreviousStatus(t *testing.T) {
 
 	res, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		Reason:         "源侧超时",
 		IdempotencyKey: "RF-KEY-FAIL",
 	})
@@ -524,7 +593,7 @@ func TestRefundOnUsedVoucherIsRejected(t *testing.T) {
 	svc := refund.New(db)
 	_, err = svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-KEY-USED",
 	})
 	if err == nil {
@@ -543,7 +612,7 @@ func TestRefundTwiceOnSameOrderIsRejected(t *testing.T) {
 
 	res, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-KEY-TWICE",
 	})
 	if err != nil {
@@ -558,7 +627,7 @@ func TestRefundTwiceOnSameOrderIsRejected(t *testing.T) {
 	// 退完再退一次（换个幂等键）—— 钱只能退一次。
 	_, err = svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-KEY-TWICE-2",
 	})
 	if err == nil {
@@ -581,7 +650,7 @@ func TestRefundCannotBeCompletedWithoutApproval(t *testing.T) {
 
 	res, err := svc.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-KEY-NOAPPROVE",
 	})
 	if err != nil {
@@ -607,6 +676,208 @@ func TestRefundCannotBeCompletedWithoutApproval(t *testing.T) {
 	}
 	if status != "refunding" {
 		t.Fatalf("订单状态应该还是 refunding，实际 %s", status)
+	}
+	invariantsGreen(t, db)
+}
+
+// TestRefundRequestRejectsNonRefundablePromise 守住「承诺不可退就不能退」。
+//
+// product.refund_policy 是我们自己对客户的承诺。它写着 refundable=false 时，
+// 退款必须当场被挡下 —— 承诺写在纸上没人执行，等于没有承诺。
+//
+// 变体 6（SKU-IT-DOGES）的商品承诺是「不可退」。它没有实名要求，
+// 所以这条下单路自己建，不走 placeOrder（那条路要求变体有实名要求）。
+func TestRefundRequestRejectsNonRefundablePromise(t *testing.T) {
+	db := seeded(t)
+	date := priceDate(t, db, 6)
+	o, err := order.New(db).Place(order.Request{
+		ChannelID:      1,
+		CustomerID:     3,
+		IdempotencyKey: "rf-nonref-001",
+		Items:          []order.Item{{VariantID: 6, Quantity: 1, VisitDate: date}},
+	})
+	if err != nil {
+		t.Fatalf("下单失败：%v", err)
+	}
+	if _, err := fulfillment.New(db).RecordPayment(fulfillment.PaymentRequest{
+		OrderID:       o.ID,
+		Method:        "alipay",
+		Amount:        o.Total,
+		Currency:      o.Currency,
+		Provider:      "alipay",
+		ProviderTxnID: "ALI-RF-NONREF",
+	}); err != nil {
+		t.Fatalf("支付失败：%v", err)
+	}
+
+	// 承诺确实是「不可退」—— 不是因为别的错才被挡下的。
+	pol := policyRow(t, db, o.ID)
+	if pol["refundable"] != "false" {
+		t.Fatalf("变体 6 的商品承诺应该是不可退，实际 %s", pol["refundable"])
+	}
+
+	_, err = refund.New(db).RequestRefund(refund.Request{
+		OrderID:        o.ID,
+		Amount:         payableAmount(t, db, o.ID),
+		IdempotencyKey: "RF-KEY-NONREF",
+	})
+	if err == nil {
+		t.Fatal("承诺不可退的订单不该能发起退款")
+	}
+	if !strings.Contains(err.Error(), "退款承诺是「不可退」") {
+		t.Fatalf("报错要说清是承诺不可退，实际：%v", err)
+	}
+	invariantsGreen(t, db)
+}
+
+// TestRefundRequestRejectsPastCutoff 守住「距开场不足 cutoff_hours 不许退」。
+//
+// 承诺里写了 cutoff_hours —— 距开场不足这么多小时就不接受退款。
+// 把场次的开始时间挪到「一会儿之后」，就落进截止点里，发起退款必须被挡下。
+//
+// 参照点是 product_session.start_at（没有就退回 session_date），
+// 判定是 now() > 参照点 − cutoff_hours：时间不够了，就是过了截止点。
+func TestRefundRequestRejectsPastCutoff(t *testing.T) {
+	db := seeded(t)
+	o := paidOrder(t, db, "rf-cutoff-001", "ALI-RF-CUTOFF")
+
+	// 挪场次时间之前，先确认还在截止点之外 —— 否则这个测试证明不了什么。
+	before := policyRow(t, db, o.ID)
+	if before["has_cutoff_point"] != "true" {
+		t.Fatalf("这一单该有截止参照点，实际 has_cutoff_point=%s", before["has_cutoff_point"])
+	}
+	if before["within_cutoff"] != "false" {
+		t.Fatalf("挪时间之前不该已经在截止点里，实际 within_cutoff=%s", before["within_cutoff"])
+	}
+
+	// 把场次挪到 2 小时后 —— 承诺的截止窗口是 48 小时，所以稳稳落进截止点里。
+	if err := db.Exec(`UPDATE product_session
+                        SET start_at = now() + interval '2 hours'
+                      WHERE id = (SELECT session_id FROM sales_order_item
+                                   WHERE order_id = ` + store.Quote(o.ID) + ` LIMIT 1);`); err != nil {
+		t.Fatalf("挪场次时间失败：%v", err)
+	}
+
+	after := policyRow(t, db, o.ID)
+	if after["within_cutoff"] != "true" {
+		t.Fatalf("挪时间之后应该已在截止点里，实际 within_cutoff=%s", after["within_cutoff"])
+	}
+
+	_, err := refund.New(db).RequestRefund(refund.Request{
+		OrderID:        o.ID,
+		Amount:         payableAmount(t, db, o.ID),
+		IdempotencyKey: "RF-KEY-CUTOFF",
+	})
+	if err == nil {
+		t.Fatal("距开场不足 cutoff_hours 不该能发起退款")
+	}
+	if !strings.Contains(err.Error(), "已过退款截止点") {
+		t.Fatalf("报错要说清是过了截止点，实际：%v", err)
+	}
+	invariantsGreen(t, db)
+}
+
+// TestRefundAmountIsNetOfPromisedFee 守住「应付退款额 = 实付 − 承诺的手续费」。
+//
+// 变体 9 的商品承诺有 10% 手续费。所以应付退款额不等于订单实付。
+//
+// 这里的关键不是「算出 0.9 倍」，而是**金额必须向库问**：
+// Go 侧自己乘一遍就多了一份口径（硬约束 20 的同类要求）。
+// 所以断言的是「库说的应付额与实付的比例等于承诺的比例」——
+// 期望值由这一单自己的实付与承诺费率推出来，不抄一个写死的数
+// （写死的数换个订单就是错的，且没人说得清它错在哪）。
+func TestRefundAmountIsNetOfPromisedFee(t *testing.T) {
+	db := seeded(t)
+	o := paidOrder(t, db, "rf-fee-001", "ALI-RF-FEE")
+
+	pol := policyRow(t, db, o.ID)
+	if pol["fee_percent"] != "10.000000" && pol["fee_percent"] != "10" {
+		t.Fatalf("变体 9 的商品承诺应该是 10%% 手续费，实际 %s", pol["fee_percent"])
+	}
+
+	// 期望值 = 实付 × (1 − 手续费率)。用整数分算，避免浮点。
+	paidCents := parseInt(amountCents(t, o.Total))
+	feeCents := paidCents * 10 / 100
+	wantCents := paidCents - feeCents
+	want := formatCents(wantCents)
+	if pol["expected_amount"] != want {
+		t.Fatalf("应付退款额应该是 %s（实付 %s 减 10%% 手续费），实际 %s",
+			want, o.Total, pol["expected_amount"])
+	}
+
+	// 应付额确实不等于订单实付 —— 这正是手续费承诺在起作用。
+	if payableAmount(t, db, o.ID) == o.Total {
+		t.Fatalf("有 10%% 手续费承诺时应付退款额不该等于实付（都是 %s）", o.Total)
+	}
+
+	// 按应付额发起退款应当被接受 —— 承诺与执行者对得上。
+	svc := refund.New(db)
+	res, err := svc.RequestRefund(refund.Request{
+		OrderID:        o.ID,
+		Amount:         payableAmount(t, db, o.ID),
+		IdempotencyKey: "RF-KEY-FEE",
+	})
+	if err != nil {
+		t.Fatalf("按应付退款额发起退款失败：%v", err)
+	}
+	if _, err := svc.ApproveRefund(res.RefundID, "boss@test"); err != nil {
+		t.Fatalf("放行退款失败：%v", err)
+	}
+	if _, err := svc.CompleteRefund(refund.CompleteRequest{RefundID: res.RefundID, Success: true}); err != nil {
+		t.Fatalf("落退款结果失败：%v", err)
+	}
+
+	// 退款单上存的金额就是应付额。
+	st, err := svc.Show(res.RefundID)
+	if err != nil {
+		t.Fatalf("读退款单失败：%v", err)
+	}
+	if st.Amount != want {
+		t.Fatalf("退款单金额应该是 %s，实际 %s", want, st.Amount)
+	}
+	invariantsGreen(t, db)
+}
+
+// TestRefundApproveRechecksPromise 守住「放行时再判一遍承诺」。
+//
+// 发起到放行之间有时间差，cutoff_hours 会被这段时间吃掉。
+// 发起时距开场还有几十小时，放行时场次挪到两小时后 —— 这一笔
+// 在发起时合法，在放行时就该被挡下。
+//
+// 所以放行这一步要**重判**，不是照抄发起时的结论。
+func TestRefundApproveRechecksPromise(t *testing.T) {
+	db := seeded(t)
+	o := paidOrder(t, db, "rf-recheck-001", "ALI-RF-RECHECK")
+	svc := refund.New(db)
+
+	res, err := svc.RequestRefund(refund.Request{
+		OrderID:        o.ID,
+		Amount:         payableAmount(t, db, o.ID),
+		IdempotencyKey: "RF-KEY-RECHECK",
+	})
+	if err != nil {
+		t.Fatalf("发起退款失败：%v", err)
+	}
+
+	// 发起之后、放行之前，场次挪到截止点里。
+	if err := db.Exec(`UPDATE product_session
+                        SET start_at = now() + interval '2 hours'
+                      WHERE id = (SELECT session_id FROM sales_order_item
+                                   WHERE order_id = ` + store.Quote(o.ID) + ` LIMIT 1);`); err != nil {
+		t.Fatalf("挪场次时间失败：%v", err)
+	}
+
+	_, err = svc.ApproveRefund(res.RefundID, "boss@test")
+	if err == nil {
+		t.Fatal("过了截止点不该能放行退款")
+	}
+	if !strings.Contains(err.Error(), "不能放行退款") {
+		t.Fatalf("报错要说清是放行时被挡下，实际：%v", err)
+	}
+
+	// 钱没退，订单就还挂在 refunding 上。
+	if got := orderStatus(t, db, o.ID); got != "refunding" {
+		t.Fatalf("放行被挡下时订单状态应该还是 refunding，实际 %s", got)
 	}
 	invariantsGreen(t, db)
 }

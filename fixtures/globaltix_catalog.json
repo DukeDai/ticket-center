@@ -20,6 +20,13 @@
           "validityDays": 1, "stock": 20
         },
         {
+          "_comment": "「双日票」这个 SKU 源侧只肯兑现 1 天（validityDays=1），而规范侧的两日票承诺是 2 天 —— 兑现窗口短于承诺，选源时必须被挡住（不变量 123）。这个样例就是那条判据的现场。",
+          "skuId": "80041201-8004120103", "itemName": "门票 成人双日票",
+          "audience": "ADULT", "passType": "2d", "parks": ["studio_tour"],
+          "currency": "CNY", "salePrice": 980.00, "netPrice": 950.00,
+          "validityDays": 1, "stock": 12
+        },
+        {
           "skuId": "80041201-8004120102", "itemName": "快速通行证 成人票",
           "audience": "ADULT", "passType": "1d", "addon": true,
           "currency": "CNY", "salePrice": 358.00, "netPrice": 349.00,
@@ -85,6 +92,11 @@
     {
       "ourVariantKey": "adult:1d:studio_only",
       "mappingId": "80041201-8004120101"
+    },
+    {
+      "_comment": "我们的双日票 ← 源侧那个只肯兑现 1 天的双日票 SKU。源侧报的兑现窗口短于我们的承诺，选源时这个源必须被挡住 —— 卖出去就是「第二天到门口闸机判 expired」。",
+      "ourVariantKey": "adult:2d:studio_only",
+      "mappingId": "80041201-8004120103"
     },
     {
       "ourVariantKey": "child:1d:studio_only",

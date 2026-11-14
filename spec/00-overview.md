@@ -67,19 +67,27 @@
 源 API / 源推送
    └─> 接入层（Go：cmd/tc-connect + internal/：凭证 → 请求 → 四分类 → 重试 → 归档）
         └─> supplier_raw_payload（原文归档，可回放，落库前脱敏）
-             └─> supplier_product（源商品原样落库）
-             ├─> supplier_ticket_type（源票种）
-             ├─> supplier_variant（源变体：固定组合 SKU / 参数化售卖方案）
-             ├─> supplier_session（源场次）
-             └─> supplier_price_calendar（源成本价日历，按 源变体×规范变体×日期）
-                    └─> product_mapping（归一化到规范商品）
-                         └─> product（规范商品）
-                              ├─> product_variant（可售单元：人群 × 票种 × 园区范围 × 加购件）
-                              │      └─> supplier_variant_mapping（覆盖语义：谁能履约这个组合）
-                              ├─> product_session（规范场次）
-                              │      └─> product_session_source（哪些源能供这个场次）
-                              └─> ticket_type（规范票种，人群维度的锚）
+             └─> 同步落库写者（internal/sync，入口 tc-connect jobs：幂等 upsert，退役不删）
+                  └─> supplier_product（源商品原样落库）
+                  ├─> supplier_ticket_type（源票种）
+                  ├─> supplier_variant（源变体：固定组合 SKU / 参数化售卖方案）
+                  ├─> supplier_session（源场次）
+                  └─> supplier_price_calendar（源成本价日历，按 源变体×规范变体×日期）
+                       └─> product_mapping（归一化到规范商品）
+                            └─> product（规范商品）
+                                 ├─> product_variant（可售单元：人群 × 票种 × 园区范围 × 加购件）
+                                 │      └─> supplier_variant_mapping（覆盖语义：谁能履约这个组合）
+                                 ├─> product_session（规范场次）
+                                 │      └─> product_session_source（哪些源能供这个场次）
+                                 └─> ticket_type（规范票种，人群维度的锚）
 ```
+
+**规范层与源层的主数据来源不同**（§5.27 第三条）：
+规范层是**人工撰写的**（`product` / `product_variant` / `product_session` 是我们的商业定义，
+源侧不报这个组合），源层是**从源报文机器推导出来的**（源侧报什么就是什么）。
+衔接处是 `product_mapping` —— 那是**判断**，不是推导。
+同步作业只做机器能做的判定：源侧报了一个我们目录里没有的东西，
+它落成 `pending_review`，**不替人决定它该对应哪个商品**。
 
 ### 3.2 售前（Search / Detail）
 
@@ -299,7 +307,8 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 - [x] **票码与持票人一一对应**：票码数与要发的张数不符当场报错；按人计价一人一券、按团报价整团一券
 - [x] **预订的源场次来自绑定**：从 `product_session_source` 取，不按日期猜（不变量 59）
 - [x] **退款有唯一实现**：`fn_request_refund` / `fn_approve_refund` / `fn_complete_refund`（`db/migrations/007_refund.sql`）；接入层 `internal/refund` + `tc-connect refund request|approve|complete|show`
-- [x] **退款的资格与金额由事实决定**：有没有收到钱看 `sales_payment` 里成功的支付记录，不看订单状态；金额必须等于订单实付；幂等键必填，同键异内容报错
+- [x] **退款的资格与金额由事实决定**：有没有收到钱看 `sales_payment` 里成功的支付记录，不看订单状态；金额必须等于按承诺算出的应付退款额（净额）；幂等键必填，同键异内容报错
+- [x] **退款承诺有唯一的执行者**：`fn_refund_policy` 读承诺、算截止点、算应付额；发起与放行各判一次（不变量 124-126）
 - [x] **退款成功后事实一起改**：明细 / 凭证 / 预订 / 支付 / 订单一次改完；退款侧不变量 61-64 把住「钱退了、事实没变」
 - [x] **退款失败订单能退回去**：发起时记 `previous_order_status`，失败时照它恢复；退不回去就留在 `refunding` 等人处理
 - [x] **核销有唯一实现**：`fn_redeem_voucher`（`db/migrations/008_redemption.sql`）；接入层 `internal/redemption` + `tc-connect redeem scan|show`；核销侧不变量 65-68 把住「已核销必有一次成功核销、一张券最多成功一次、额度一次用尽且账对得上、核销发生在有效期内」
@@ -338,6 +347,8 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 
 | 日期 | 变更 | 影响 |
 |---|---|---|
+| 2026-11-14 | **退款承诺的执行者落地（032 + 033）**：新增 `db/migrations/032_refund_policy_enforcer.sql`：`fn_refund_policy(p_order_id)` 是退款承诺的唯一读法与执行者（纯读函数，解析这一单**实际生效**的承诺：`product.refund_policy` 与 `channel_listing.refund_policy_override` 逐字段合并；算截止点 `product_session.start_at` / `session_date` 取最早；算应付退款额 `实付 × (1 − fee_percent)`，四舍五入两位）；`fn_request_refund` / `fn_approve_refund` 各整体替换一次（发起判资格 + 校验金额，放行**重判一遍** —— 发起到放行之间时间在走，`cutoff_hours` 会被吃掉）；`sales_refund.raw_payload->'policy'` 冻进承诺快照（`refundable` / `cutoff_hours` / `fee_percent` / `expected_amount` 四个键）；不变量从 123 条扩到 126 条（124 退成功的单金额必须等于应付额、125 承诺不可退的商品不许有退成功的单、126 每一张退款单的金额都必须等于应付额），新增 `v_invariant_checks_refund_policy`；不变量 62 的「金额」这一半改为对照应付额（不再对照 `order.total`）；新增 `db/migrations/033_refund_payload_merge.sql`：`fn_complete_refund` 的 `raw_payload` 改为**合并**而不是覆盖（`raw_payload || v_callback`，合并前摘掉回调报文里的 `policy` 键）；Go 侧 `internal/refund` 只拼参数、只读结果，测试改成向库问应付额 | 承诺写在数据里、没人执行：C 端写着「可退 10% 手续费」，退款路径却按全额退，少收的钱公司自己承担，客户看到的口径与实际拿到的钱对不上。现在承诺进入写路径，且**发起与放行各判一次** —— 只判一次的话，截止点是在承诺里写着的时点，不是发起那一刻的状态。`sales_refund.amount` 的口径定死为**净额**（实退给客户的钱），有手续费承诺时它不等于订单实付 —— 差的那笔是承诺过的手续费，不是错的 |
+| 2026-11-14 | **源侧兑现窗口落到列上（源侧肯兑现几天不再靠猜）**：新增 `supplier_variant.valid_days`（可空，> 0）；选源时多一条判据（源侧报了天数且短于规范侧承诺 → 这个源不进候选，源侧没报不拦）；不变量从 121 条扩到 123 条（122 卖出去的票源侧兑现窗口盖得住承诺、123 候选集里的源兑现窗口盖得住承诺）；事前事后各一条门禁，刻意互不依赖 | GlobalTix 报的是 `validityDays`（源侧肯兑现几天），`passType` 只是营销标签。归一化此前只认 `passType`，两日票的承诺落到了规范侧的轴选项上，源侧肯兑现几天没有任何地方记 —— 选源时不看它，出券时也不看它。「不知道」不等于「能兑现」，也不等于「不能兑现」：源侧没报就不拦，与硬约束 34 同一条口径 |
 | 2026-11-14 | **合同与硬约束分拆成多个文件（只重组，不改业务行为）**：`SPEC.md` 从 2466 行拆成索引（50 行）+ `spec/` 下 14 个主题文件（§4 不变量小节与 §5 写路径小节**同文件**，不变量与它的口径在一起）；`AGENTS.md` 从 705 行拆成 483 行（留下「这是什么」+ 40 条硬约束），运维内容（目录 / 常用命令 / 沙箱注意 / 自检清单）移到新建的 `docs/working-notes.md`；README 的 13 处 `SPEC.md#…` 锚点改为指向 `spec/*.md`；`docs/` 下 4 个文档与 `db/seed.sql` 的 `SPEC.md §N` 引用补上文件路径 | 两个大文件都到了「一个文件什么都装」的地步：合同 2466 行、硬约束 705 行，改一处要读的东西太多，加一条规则得挤进别人的章节里。取舍写在这里：**拆分的单元是主题，不是篇幅**（一个文件一个主题，不按「多少行」切 —— 按行数切出来的文件会跨主题，下次加规则还是得找）；**§4 与 §5 的小节放同一文件**（不变量与它的口径必须挨着读，拆开就变成「规则在一个文件、门禁在另一个文件」）；**§ 号一个不改**（`§4.13` 还是 `§4.13`，引用它的地方不必改；只补文件路径，不改编号 —— 编号是给人定位用的，路径是给人点开用的，两件事）；**`SPEC.md` 保留 §4 的分组快照**（合同需要自足，但那一份只写这一处，加条时改这一处，见硬约束 37）。**已发布的迁移文件一个字没动**（`db/migrations/*.sql` 的 sha256 记在 `ops.schema_migration` 账本里，改了会被迁移引擎直接拒绝 —— 迁移文件里的 `SPEC.md §N` 注释因此保持原样，宁可留旧路径也不破账本）；不变量一条没少、一条没丢（121 条仍逐条断言） |
 | 2026-11-13 | **值进 SQL 的转义从约定变成机制（§5.26）**：`internal/store` 新增 `NewSQL` / `Bind` / `BindAll` / `BindJSON` / `And` / `Or` / `Where`（绑定时转义，非标量直接报错并指路 `BindJSON`）与 `Quote`（字符串字面量）/ `QuoteIdent`（标识符）；新增 `internal/sqllint` + `cmd/tc-lint`（扫 AST，把「值拼进 SQL 的引号位置且没经过转义」报出来），门禁挂在 `make check` 与 CI 上；`internal/capi/products.go` / `internal/migrate/migrate.go` / `internal/variant/variant.go` 三处改为走绑定机制；`AGENTS.md` 硬约束 40 与 `docs/integrations.md` 第 11 条同步；**无迁移** | psql 是子进程，没有 `$1` 占位符，SQL 全是拼出来的 —— 唯一的防线是「记得调 `store.Quote`」，而「记得」是约定不是机制，约定迟早被漏掉一次，漏掉的那一次就是注入（一次注入就是一次数据泄露，而「记得转义」在被赶工的时候是第一个被省掉的）。取舍写在这里：**门禁盯带引号的位置**（`'%s'` 里插进来的值会闭合引号，是真问题），**放过裸数值位置**（`col = %s` 插进来的值不带引号，字符串内容打断不了它 —— 但它同样不是转义过的字面量，所以写查询优先用 `store.NewSQL`，它不留这个口子）；**包级常量与编译期字面量不算问题**（门禁噪音多了就没人看了，判据宁放过不误伤）。门禁会放过两种真问题，所以它是第一道不是唯一一道 —— 这是设计上的取舍，不是漏洞，文档里写明了 |
 | 2026-11-13 | **作业调度落地（§5.25）**：新增 `cmd/tc-connect/cmd_jobs.go`（`tc-connect jobs`）与 `make jobs`：一次跑完凭证过期（`fn_expire_vouchers`）/ 预占过期（`fn_expire_holds`）/ 组合同步（`fn_sync_combo_calendar`）/ 读模型刷新（`fn_refresh_read_models`），再读 `v_c_readmodel_drift` 与 `v_voucher_expiry_overdue` 做读侧自检；新增 §5.25 与 §7 验收项；**无迁移**（判据与作业本体全在库里，Go 侧只拼参数、只读结果） | 上一条落地了 `fn_expire_vouchers`，但**作业在库里没人调它** —— 判据、幂等、事件全对，只要没人跑，券的状态还是停在 `issued`，那个状态洞原样存在。补作业而不补调度，是把「没人跑」从「没人知道」变成「以为有人跑」。取舍写在这里：**一次跑完就退出**（不常驻、不自己排期 —— 常驻进程要处理信号、重启、漂移、跨库切换，那是调度器的活）；**间隔不写在代码里**（写死就成了第二份口径，改的时候要改两处，改漏一处没人知道），交给系统 cron 或 k8s CronJob；**失败非零退出**，重试交给调度器；**作业幂等**靠的是「`UPDATE ... WHERE status = 'issued'`」这个形状，不是靠调度器的自觉，限批（默认 500）是同一件事的另一半；**刷新后仍漂移非零退出**（读模型刚刷新过还对不上就是硬事实 —— 这条是**防御性断言**，刷新本身就是修复机制，手改出来的漂移会被修好，所以它是最后一道防线不是常规路径）；**到期却还停在 `issued` 只报告不失败**（那是运行状态不是数据违规，§5.24 的口径是「看得见但不挡门禁」—— 让它挡住调度，会把一条告警变成一个死循环） |

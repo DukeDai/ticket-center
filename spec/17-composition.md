@@ -11,7 +11,7 @@
 
 - **方向 A**（已有）：一个源 SKU 覆盖多个规范变体 —— zowoyoo 的 `ZWO-1D-BASE`
   一个源变体同时能装出成人 / 儿童 / 老年三个可售单元。
-  门禁住在 `v_invariant_checks_core` 里（第 30、43 条等）。
+  门禁住在 `v_invariant_checks_core_flat` 里（第 30、43 条等）。
 - **方向 B**（本节）：一个规范变体由多个源 SKU 按数量组成 —— GlobalTix 的
   「家庭套餐（2 大 1 小）」，源侧是**一条**组合表达式
   （`80041201-8004120101|2 + 80041201-8004120102|2 + ...`），源侧一次预订就下完。
@@ -37,7 +37,7 @@
 ### 4.16 组合售卖侧不变量（82-88，2026-11-07 补充）
 
 §4.15 的四条管的是**映射**对不对得上。组合真的卖出去之后，
-还有七件事必须成立 —— 门禁住在 `v_invariant_checks_combo` 里。
+还有七件事必须成立 —— 门禁住在 `v_invariant_checks_combo_flat` 里。
 
 | # | 不变量 |
 |---|---|
@@ -172,7 +172,7 @@ GlobalTix 官方示例的「家庭套餐」就是这一种：2 份成人门票 +
 | `supplier_variant_composition` | 组合映射的源侧配方：组合 ← 若干源 SKU × 数量 |
 | `v_variant_composition` | 两侧并排：规范侧声明的组件与数量 ↔ 源侧的 SKU 与数量 |
 | `v_invariant_checks_composition` | 组合映射侧不变量（78-81） |
-| `v_invariant_checks_combo` | 组合售卖侧不变量（82-86） |
+| `v_invariant_checks_combo_flat` | 组合售卖侧不变量（82-86） |
 
 写路径的落点在 Go 侧的 `internal/compose`：把源侧的组合表达式解成配方、
 核上规范侧的组件声明、核数量，写进 `supplier_variant_composition`（幂等，可重复执行）。
@@ -263,7 +263,7 @@ CLI 是 `tc-connect compose plan|apply`。
 | `fn_bound_supplier_session()` | 场次级绑定的唯一实现：规范场次 + 源商品 → 源场次 |
 | `v_order_item_source` | 成分对账：每行成分的源、数量、成本、份数、订了没有、发了几张券 |
 | `v_combo_price_gap` | 组合当天为什么不可售：差在哪、缺什么、多少钱 |
-| `v_invariant_checks_combo` | 组合售卖侧不变量（82-88） |
+| `v_invariant_checks_combo_flat` | 组合售卖侧不变量（82-88） |
 
 **这一段还改了一处 009 的口径**：`fn_available_qty` 的池子归属。
 源侧只报场次合计（票种为空的快照行）时，那个池子是**全票种共享**的，

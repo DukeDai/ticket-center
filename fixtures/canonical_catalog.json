@@ -8,8 +8,8 @@
       "city_code": "BJ",
       "axes": [
         { "code": "pass_type", "name": "票种", "options": [
-          { "code": "1d", "name": "一日票" },
-          { "code": "2d", "name": "双日票" }
+          { "code": "1d", "name": "一日票", "valid_days": 1 },
+          { "code": "2d", "name": "双日票", "valid_days": 2 }
         ]},
         { "code": "park_scope", "name": "园区范围", "options": [
           { "code": "studio_only", "name": "工作室之旅（单园区）" },
@@ -73,7 +73,7 @@
       "city_code": "BJ",
       "axes": [
         { "code": "pass_type", "name": "行程天数", "options": [
-          { "code": "1d", "name": "一日行程" }
+          { "code": "1d", "name": "一日行程", "valid_days": 1 }
         ]}
       ],
       "ticket_types": [

@@ -233,6 +233,7 @@ make order-demo                                       # 端到端演示：找有
 ./bin/tc-connect redeem overdue --db ticket_center              # 到期却还停在 issued 的券（过期作业漏跑）
 ./bin/tc-connect redeem expire  --db ticket_center              # 跑凭证过期作业（issued → expired）
 ./bin/tc-connect jobs          --db ticket_center              # 跑一遍全部批处理作业（过期 / 预占 / 读模型）
+./bin/tc-connect jobs          --db ticket_center --sync       # 顺带跑目录同步作业（要连外部源、要凭证）
 ./bin/tc-connect stock show  --db ticket_center --supplier-session 1
 ./bin/tc-connect variant feed    --db ticket_center --channel 1   # 先看哪一天有售价（下面 <日期> 从这里取）
 ./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 --qty 2 --date <日期>
@@ -258,6 +259,22 @@ make order-demo                                       # 端到端演示：找有
 详见 [SPEC §5.25](spec/20-jobs.md#525-作业调度的口径)。
 演示脚本（`make order-demo`）也是自己找有售价的日期，不写死。
 
+**目录同步是 `tc-connect jobs` 的一个分支**（`--sync`），不是另一条命令 ——
+作业调度有唯一入口，少一条命令就少一处「谁负责跑」的答案。
+不带 `--sync` 时这条命令**不碰外部源、不需要凭证**：
+凭证过期、预占过期、读模型刷新是纯库内维护，
+让它们依赖外部源的运行环境，等于把「某个源没配 API key」
+变成「每 5 分钟的库维护作业失败一次」。两者走各自的 cron 行：
+
+```
+*/5  * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center
+17   * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center --sync
+```
+
+同步作业默认只跑**配置里已确认**的源（没确认的源端点是没定的，硬跑只会每次报
+「接口细节待确认」）；`--sync-supplier trip_com` 可以点名跑某一个。
+口径在 [SPEC §5.27](spec/20-jobs.md#527-目录同步作业的口径)。
+
 `hold create` 不带 `--ttl` 时用默认 900 秒（不变量 119 守着「预占必须有确定的到期时间」）。
 
 **写路径的实测证据**：
@@ -267,7 +284,8 @@ make order-demo                                       # 端到端演示：找有
 | 幂等重放 | 同键同内容返回同一张单；同键异内容当场报错 |
 | 重复收款 | 另一笔流水打进已付订单 → 报错，不静默吞掉（`006` 守卫） |
 | 订单履约状态 | 由明细的实际出票情况推导，调用方 UPDATE 即为设计事故（不变量 60） |
-| 退款金额 | 必须等于订单实付；行级退款明确报错（分摊口径与源侧部分取消都还没落地） |
+| 退款金额 | 必须等于按承诺算出的应付退款额（净额：实付 × (1 − fee_percent)）；行级退款明确报错（分摊口径与源侧部分取消都还没落地） |
+| 退款承诺 | 发起与放行各判一次；发起时的承诺快照四件套冻进 `raw_payload->'policy'`，回调报文合并而不是覆盖 |
 | 退款放行 | `fn_complete_refund` 只接受 `approved` 的退款单，其余状态当场报错（不变量 93） |
 | 核销 | 扫票记录永远追加；第二张扫同一张券 → `duplicate` + 带回第一次的记录 id 与时间（`ux_redemption_single_success`） |
 | 库存 | 源侧快照与我们自己的承诺对账（`unreflected = our_sold − source_sold`），不各减一遍；取不到快照返回「不知道」而不是 0 |
@@ -332,6 +350,7 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 | [`docs/schema-design.md`](docs/schema-design.md) | SQL / 半 SQL / NoSQL 选型论证、表清单、**变体模型（§5）**、**库存预占（§17）**、**有效期（§18）**、**组合映射（§20）**、演进路线 |
 | [`docs/connector-contract.md`](docs/connector-contract.md) | 供应源接入端口、错误四分类、幂等重试、七源差异矩阵、**§9 接入层实现现状** |
 | [`docs/integrations.md`](docs/integrations.md) | **接入层（Go）**：包结构、设计纪律、CLI 用法、拿到授权后的验证清单 |
+| [`docs/review-2026-11-14-normalization.md`](docs/review-2026-11-14-normalization.md) | **交叉评审纪要**（2026-11-14）：7 条缺陷指控的判定与证据、被撤回的主张、实施顺序 |
 | [`db/migrations/`](db/migrations/) | 全部 DDL：冻结的建库基线 + 后续迁移文件（`tc-connect migrate` 应用） |
 | [`db/seed.sql`](db/seed.sql) | 种子数据 |
 | [`db/verify.sql`](db/verify.sql) | 验收查询 + 不变量断言 |

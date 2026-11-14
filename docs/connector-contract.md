@@ -520,6 +520,20 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 直接生成
 | trip_com | 按 SKU + 日期 | CNY | 随商品窗口 | 待确认 | ☐ |
 | zowoyoo | 按 spec + 人群参数 | CNY | 指定使用日 | 待确认 | ☐ |
 
+**GlobalTix 的 `validityDays` 是兑现窗口，不是营销标签（2026-11-14 起被消费）。**
+`items[].validityDays` 是源侧**肯兑现**的天数，归一化时它落到 `supplier_variant.valid_days`
+（配置里以数值通道 `numbers.valid_days` 声明，取值路径 `validityDays`）。
+`items[].passType`（`1d` / `2d`）只是营销标签 —— 它可能写「两日票」而实际只管一天，
+所以它**不许**拿来当承诺（`spec/15-validity.md` §5.10 第五口径）。
+
+这条区分不是文风问题，它是一条会拦单的判据：源侧报 1 天、我方承诺 2 天时，
+这个源不进选源候选集（`fn_route_candidates` 的兑现窗口判据），
+不变量 123 守候选集、不变量 122 守已成交的订单。
+源侧没报这个字段时 `valid_days` 为 `NULL` = 没给约束 = 不拦。
+
+其余六源的可兑现窗口字段**待商务确认**：确认之前，谁报了什么兑现窗口就落什么，
+没报就是没报，不猜（硬约束 13）。
+
 ### 6.3 场次模型
 
 | 源 | 场次粒度 | 是否绑票种 | 有容量概念 | 已核对 |
