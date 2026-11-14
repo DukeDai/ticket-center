@@ -33,12 +33,13 @@ jobs:
         with:
           go-version: "1.23"
 
-      # check = vet + test-strict + build + mock + lint + dbcheck + dryrun
+      # check = vet + test-strict + build + mock + lint + writelint + dbcheck + dryrun
       # dbcheck 在一次性库里跑 迁移 → seed → verify.sql，不变量必须全绿。
       # 不变量的条数是推导出来的（数视图有几条），不写在这里 ——
       # 写死就是第二份口径，改的时候要改两处，而且改漏一处没人知道。
       # 条数由下面「推导出来的数」这一步当场断言。
       # lint 是 SQL 门禁：值拼进 SQL 的引号位置必须先转义。
+      # writelint 是写路径门禁：机器不许洗掉人的判断，源标识写之前要校验。
       - name: 提交前自检
         run: make check
 

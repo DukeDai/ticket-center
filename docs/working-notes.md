@@ -82,6 +82,7 @@ internal/
   idgen/                      业务 ID 生成（订单号 / 幂等键 / 凭证号等）
   testdb/                     测试用临时库（建库 / 迁移 / 种子 / 清理）
   sqllint/                    SQL 门禁：查「把没转义的值拼进 SQL」的地方（cmd/tc-lint 是入口）
+  writelint/                  写路径门禁：查「机器洗掉人的判断」「源标识没校验就写」（cmd/tc-writelint 是入口）
 configs/api_config.json       传输层配置：端点 / 21 接口 ICODE / 凭证口径 / 错误码映射
 configs/mapping_rules.json    映射规则配置（演练器与接入层共用）
 fixtures/                     真实报文结构的样例（canonical / trip_com / globaltix）
@@ -89,7 +90,7 @@ scripts/mapping_dryrun.py     无凭证集成演练（源报文 → 归一化 �
 scripts/order_demo.py         下单链路端到端演示（自己找有售价的日期，不写死日期）
 scripts/poc_page.py           前端 POC 渲染器
 scripts/counts.sh + counts.sql 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
-Makefile                      build / test / mock / layers / dryrun / db / check / lint / order-demo / jobs / counts
+Makefile                      build / test / mock / layers / dryrun / db / check / lint / writelint / order-demo / jobs / counts
 ```
 
 ---
@@ -147,7 +148,8 @@ make mock                           # 协议级自检（本地 mock）
 make counts                         # 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
 make layers                         # 分层连通性测试（连通→认证→目录→详情→价格→映射→路由）
 make lint                           # SQL 门禁：查「把没转义的值拼进 SQL」的地方
-make check                          # 提交前完整自检（vet + test + mock + lint + 演练器）
+make writelint                      # 写路径门禁：查「机器洗掉人的判断」「源标识没校验就写」
+make check                          # 提交前完整自检（vet + test + mock + lint + writelint + 演练器）
 make migrate                        # 应用待应用的迁移（存量库升级用这个，别重建）
 make dbstatus                       # 看迁移状态（哪些已应用、哪些待应用）
 make refresh                        # 刷新 C 端读模型并查漂移
@@ -253,6 +255,7 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] `make test` 全绿（Go 单元测试）
 - [ ] `make mock` 协议自检全 PASS
 - [ ] `make lint` SQL 门禁通过（值进 SQL 都要先转义）
+- [ ] `make writelint` 写路径门禁通过（机器不许洗掉人的判断；源标识写之前要校验）
 - [ ] `python3 scripts/mapping_dryrun.py` 演练库不变量全 PASS
 - [ ] `make counts` 的数与文档里写的数一致（文档只引用，不自己抄）
 - [ ] [`spec/00-overview.md`](../spec/00-overview.md) §8 变更记录追加一行

@@ -57,7 +57,10 @@ fmt:
 # dbcheck 必须进 check：不变量是门禁，不是「有空跑一下」的报告（条数见 make counts）
 # lint 也必须进 check：「值进 SQL 要先转义」是约定，靠自觉迟早漏一次 ——
 # 漏掉的那一次就是注入。这道门禁把约定变成机制。
-check: vet test-strict build mock lint dbcheck dryrun
+# writelint 同理：「机器不许洗掉人的判断」「源标识写之前要校验」也是约定，
+# 靠自觉迟早漏一次 —— 漏掉的那一次，人工写的判定依据被洗掉、
+# 空标识落进库，都是靠事后门禁才发现的（那时已经不知道是谁干的）。
+check: vet test-strict build mock lint writelint dbcheck dryrun
 
 # SQL 门禁：查「把没转义的值拼进 SQL」的地方。
 #
@@ -67,6 +70,18 @@ check: vet test-strict build mock lint dbcheck dryrun
 # store.Quote / store.QuoteIdent，就报出来。
 lint:
 	$(GO) run ./cmd/tc-lint .
+
+# 写路径门禁：查「机器写的路径动了它不该动的字段」。
+#
+# 两条规则：
+#   规则 1 判断表上的 upsert 不许无条件覆盖人的判断列
+#          （人工写的判定依据不许被机器洗掉）
+#   规则 2 写了源侧表的包必须校验标识不为空
+#          （空标识落进库只能靠事后门禁发现，那时已经不知道是谁干的）
+#
+# 表与列的清单在 internal/writelint 里，各只有一份。
+writelint:
+	$(GO) run ./cmd/tc-writelint .
 
 mock: build
 	./$(BIN) mock
