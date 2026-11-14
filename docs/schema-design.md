@@ -170,7 +170,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 不变量 44 把币种守住（售价行的币种必须等于该行的结算币种）；
 不变量 45 把汇率留痕守住（留痕日期能独立复算出同一个折算因子）。
 
-**口径细节**（完整规则见 `SPEC.md` §4.6）：
+**口径细节**（完整规则见 [`spec/09-pricing.md` §4.6](../spec/09-pricing.md)）：
 
 | 环节 | 口径 |
 |---|---|
@@ -252,7 +252,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 全部业务不变量有没有被破坏？（各主题视图的并集；分组与条数见 SPEC.md §4，条数跑 `make counts`） |
+| `v_invariant_checks` | 全部业务不变量有没有被破坏？（各主题视图的并集；分组与条数见 [`SPEC.md`](../SPEC.md) §4，条数跑 `make counts`） |
 | `v_invariant_checks_core` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
@@ -682,7 +682,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 
 ## 11. 交易侧状态机：规则住在库里
 
-状态机以前只活在 `SPEC.md` 的图里。库里没有任何东西拦着「订单从 paid 直接跳 fulfilled」，
+状态机以前只活在 [`spec/00-overview.md`](../spec/00-overview.md) 的图里。库里没有任何东西拦着「订单从 paid 直接跳 fulfilled」，
 所以这件事必须由机制保证。
 
 ### 11.1 一张表装下合法流转
@@ -716,7 +716,7 @@ HINT:  合法流转见 state_transition 表与 SPEC.md §5；不允许跳过中�
 
 - **谁都绕不过去。** Go、psql、脚本、手工改库走同一条路；放应用层只挡得住走应用层的写入。
 - **状态与事件不分家。** 事件是状态变化的副产品，不是调用方的额外责任。
-- **改状态机不用发版。** 加一条合法流转 = 往 `state_transition` 插一行 + 同步 `SPEC.md` §5。
+- **改状态机不用发版。** 加一条合法流转 = 往 `state_transition` 插一行 + 同步 [`spec/00-overview.md`](../spec/00-overview.md) §5。
 
 代价是这张表得有人维护。所以它同时是不变量 46-49 的对象：
 「状态必须能从初始状态走到」保证表里的边自洽（不会有一条孤立的边让人永远走不到）。

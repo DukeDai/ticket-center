@@ -1,6 +1,6 @@
 # C 端领域模型 — 展示与购买
 
-> 配套：`SPEC.md`（合同）· `docs/ddd.md`（整体领域模型）· `docs/schema-design.md`（物理模型）
+> 配套：[`SPEC.md`](../SPEC.md)（合同索引）· [`spec/`](../spec/)（合同正文）· `docs/ddd.md`（整体领域模型）· `docs/schema-design.md`（物理模型）
 > 本文补的是 v1 建模里最大的一块缺口：**怎么把商品"展示"出去，怎么把它"卖出去"**。
 
 ---
@@ -214,7 +214,7 @@ voucher_redemption.gate_id / .gate_operator_id                            ← �
 口径：一次扫票一条记录（重复扫票记 `duplicate`，不覆盖事实）；
 一张券最多成功核销一次（唯一索引 `ux_redemption_single_success` 兜底）；
 过期 / 作废 / 未出票的券不认，但都要留记录写清原因。
-详见 [`SPEC.md` §5.8](SPEC.md)。
+详见 [`spec/13-redemption.md` §5.8](../spec/13-redemption.md)。
 
 ### 2.4 变体层：多维商品在 C 端怎么卖（2026-11-04 补充）
 
@@ -337,11 +337,11 @@ C 端要展示套餐，「里面有什么、各几个」这条事实住在组合
 | 配方对照 | `v_variant_composition` | 组合 / 组件 / 源 SKU / 源侧数量 vs 声明数量（B 端对账用） |
 | 差异对照 | `v_variant_comparison` | 组合与普通变体的差异（人群取并集放在 `combo_audience`；**组合自身的轴取值是空的** —— 组合的身份由成分决定，成分的轴取值在成分那一行上） |
 
-**写路径已经接上组合了**（`SPEC.md` §5.13）：定价（成本 = Σ 成分单价 × 数量）、
+**写路径已经接上组合了**（[`spec/17-composition.md` §5.13](../spec/17-composition.md)）：定价（成本 = Σ 成分单价 × 数量）、
 预订（按配方带整组源 SKU）、出券（一个成分发该成分应发的张数）、
 实名（`item_index` 指明属于哪一行）都做完了。
 
-**展示口径也定了**（`SPEC.md` §5.14，2026-11-08）：
+**展示口径也定了**（[`spec/17-composition.md` §5.14](../spec/17-composition.md)，2026-11-08）：
 
 1. **组合的售价行与日历格子由配方推出来。** 组合源侧没有商品条目，
    目录同步作业看不见它 —— 所以 `fn_sync_combo_calendar()` 按成分的售价行推出组合的售价行
@@ -453,7 +453,7 @@ tc-connect refresh --check      # 只查漂移（刷新作业漏跑时非零退�
 
 ### 3.1 读侧的 HTTP 通路（2026-11-10 落地）
 
-上面这条链路的读侧现在有 HTTP 接口了：`internal/capi` + `cmd/tc-api`（见 `SPEC.md` §5.18）。
+上面这条链路的读侧现在有 HTTP 接口了：`internal/capi` + `cmd/tc-api`（见 [`spec/21-c-end-api.md` §5.18](../spec/21-c-end-api.md)）。
 
 ```
 GET /healthz
@@ -511,7 +511,7 @@ GET /api/v1/variants/{variant_id}/calendar?channel_id=&from=&to=   ④ 看日历
 | 25 | 要求实名的票种持票人数必须与票数一致 | 少填一个名字 = 到现场进不去 |
 | 26 | C 端读模型卡片的起价必须能追溯到价格日历 | 卡片价格无出处 = 展示层自说自话 |
 
-变体层新增的 27-34 见 `SPEC.md` §4.4，其中直接影响 C 端的是：
+变体层新增的 27-34 见 [`spec/21-c-end-api.md` §4.4](../spec/21-c-end-api.md)，其中直接影响 C 端的是：
 
 | # | 不变量 | 为什么必须有 |
 |---|---|---|

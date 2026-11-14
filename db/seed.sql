@@ -330,7 +330,7 @@ VALUES
 -- 上架
 INSERT INTO channel_listing (id, channel_id, product_id, status, price_policy, stock_policy, booking_policy, min_order_qty, max_order_qty, sort_weight, published_at) OVERRIDING SYSTEM VALUE
 VALUES
- -- price_policy 就是定价合同（SPEC.md §4.6）：
+ -- price_policy 就是定价合同（spec/09-pricing.md §4.6）：
  --   percent              成本加价率
  --   min_margin           该渠道要求的最低毛利率（与所选源的 min_margin 取严）
  --   list_markup_percent  划线价相对售价的上浮率（缺省 0，即划线价 = 售价）

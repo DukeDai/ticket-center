@@ -335,7 +335,7 @@ GET/POST https://sopenservice.ctrip.com/openservice/serviceproxy.ashx
 ### 5.8 这次核实发现的模型缺口
 
 > 下面 4 条都是**真实缺口**（有携程字段/错误码佐证），不是推测。
-> 第 1、2 条已于 2026-11-04 定口径并落地（见 `SPEC.md` §4.5），第 3、4 条仍待处理。
+> 第 1、2 条已于 2026-11-04 定口径并落地（见 [`spec/09-pricing.md` §4.5](../spec/09-pricing.md)），第 3、4 条仍待处理。
 
 #### 5.8.1 已解决
 
@@ -681,18 +681,18 @@ fixtures/                    真实报文结构的样例
 
 **定价也只有一个实现**（`fn_price_variant`，SQL 函数）：`internal/pricing` 只负责读结果，
 Go 侧不做任何价格计算（标准库没有十进制类型，用 `float64` 接金额迟早差一分钱）。
-演练器也不再用 Python 算钱 —— 全部落到库里算。详见 `SPEC.md` §4.6。
+演练器也不再用 Python 算钱 —— 全部落到库里算。详见 [`spec/09-pricing.md` §4.6](../spec/09-pricing.md)。
 
 **选源也只有一个实现**（`fn_route_candidates`，SQL 函数）：路由视图与定价函数共用同一候选集与排序键，
 所以「定价采用的源」与「路由选中的源」永远一致（不变量 43）。
 
-**组合的售卖也只有一个实现**（`SPEC.md` §5.13，2026-11-07 落地）：
+**组合的售卖也只有一个实现**（[`spec/17-composition.md` §5.13](../spec/17-composition.md)，2026-11-07 落地）：
 成本 = Σ 成分单价 × 数量，成分从**源侧配方**取（不重新选源）；
 预订按配方带整组源 SKU；出券按成分应发的张数。
 接入层拿到组合订单时，**按配方里的成分去拼请求**，不自己决定订哪个源 SKU ——
 重新选源就出现「按 A 源的价格卖、按 B 源出票」。
 
-**预订的单位是源 SKU**（`SPEC.md` §5.6 第四条 / §5.13 第五条，2026-11-08 修订）：
+**预订的单位是源 SKU**（[`spec/11-fulfillment.md` §5.6](../spec/11-fulfillment.md) 第四条 / [`spec/17-composition.md` §5.13](../spec/17-composition.md) 第五条，2026-11-08 修订）：
 接入层向源侧下单时，**一个源 SKU 发一次请求**，不是每个成分发一次。
 理由是源卖的是 SKU —— 参数化源里成人票与儿童票是同一个源 SKU，
 按成分各发一次 = 同一个 SKU 订两次（源侧两张订单单，对账对不上）。
@@ -705,7 +705,7 @@ Go 侧不做任何价格计算（标准库没有十进制类型，用 `float64` 
 数量比选用 `math/big.Rat`（不用浮点），写库是幂等 upsert。
 演练器不再自带一份 Python 版组合解析 —— 两份实现必然分叉。
 
-**组合在 C 端也只有一个实现**（`SPEC.md` §5.14，2026-11-08 落地）：
+**组合在 C 端也只有一个实现**（[`spec/17-composition.md` §5.14](../spec/17-composition.md)，2026-11-08 落地）：
 组合源侧没有商品条目，目录同步作业看不见它 —— 它的售价行与日历格子由配方推出来
 （`fn_sync_combo_calendar()`），构成进读模型（`c_variant_composition`）。
 `internal/readmodel.SyncCombos` 只调库里的函数，`internal/variant.CompositionRows` 只读视图。

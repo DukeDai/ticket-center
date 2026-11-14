@@ -199,26 +199,26 @@ psql -h 127.0.0.1 -d ticket_center -c "select seq, check_name, passed from v_inv
 
 | 段 | 唯一实现 | 规则与不变量 |
 |---|---|---|
-| 下单 | `fn_place_order`（`004`） | [SPEC §5.5](SPEC.md#55-下单写路径2026-11-07-落地) · 不变量 54 |
-| 履约 | `fn_record_payment` / `fn_create_bookings` / `fn_request_booking` / `fn_record_booking_attempt` / `fn_complete_booking` / `fn_issue_voucher` / `fn_retry_booking` / `fn_apply_order_fulfillment`（`005`/`006`） | [SPEC §5.6](SPEC.md#56-履约写路径2026-11-07-落地) · 不变量 55-60 |
-| 退款 | `fn_request_refund` / `fn_approve_refund` / `fn_complete_refund`（`007`） | [SPEC §5.7](SPEC.md#57-退款写路径2026-11-07-落地) · 不变量 61-64 |
-| 核销 | `fn_redeem_voucher`（`008`） | [SPEC §5.8](SPEC.md#58-核销写路径2026-11-07-落地) · 不变量 65-68 |
+| 下单 | `fn_place_order`（`004`） | [SPEC §5.5](spec/10-ordering.md#55-下单写路径2026-11-07-落地) · 不变量 54 |
+| 履约 | `fn_record_payment` / `fn_create_bookings` / `fn_request_booking` / `fn_record_booking_attempt` / `fn_complete_booking` / `fn_issue_voucher` / `fn_retry_booking` / `fn_apply_order_fulfillment`（`005`/`006`） | [SPEC §5.6](spec/11-fulfillment.md#56-履约写路径2026-11-07-落地) · 不变量 55-60 |
+| 退款 | `fn_request_refund` / `fn_approve_refund` / `fn_complete_refund`（`007`） | [SPEC §5.7](spec/12-refund.md#57-退款写路径2026-11-07-落地) · 不变量 61-64 |
+| 核销 | `fn_redeem_voucher`（`008`） | [SPEC §5.8](spec/13-redemption.md#58-核销写路径2026-11-07-落地) · 不变量 65-68 |
 
 状态机由机制保证：合法流转写在 `state_transition` 表里（唯一来源），
 `fn_guard_state_transition` 挂在 `trg_*_status_guard` 上挡住非法流转，
 `fn_emit_state_event` 挂在 `trg_*_status_event` 上保证状态一变就落一条领域事件到
 `event_outbox`。改状态机 = 改那张表 + 同步 SPEC §5，不去改某个 Go 分支。
-（[SPEC §5.4](SPEC.md#54-状态机由机制保证2026-11-06-落地)）
+（[SPEC §5.4](spec/00-overview.md#54-状态机由机制保证2026-11-06-落地)）
 
 库存可售数、有效期长度、份数区间、单位价这四样也各有唯一实现，
-口径见 [SPEC §5.9](SPEC.md#59-库存预占写路径2026-11-07-落地) ·
-[§5.10](SPEC.md#510-有效期口径2026-11-07-落地) ·
-[§5.21](SPEC.md#521-源侧的售卖份数区间口径2026-11-11-落地) ·
-[§5.22](SPEC.md#522-按团报价的单位价口径2026-11-11-落地)。
+口径见 [SPEC §5.9](spec/14-inventory.md#59-库存预占写路径2026-11-07-落地) ·
+[§5.10](spec/15-validity.md#510-有效期口径2026-11-07-落地) ·
+[§5.21](spec/19-reassign.md#521-源侧的售卖份数区间口径2026-11-11-落地) ·
+[§5.22](spec/19-reassign.md#522-按团报价的单位价口径2026-11-11-落地)。
 
 异构融合的三种供给形态（单张 / 配方 / 套装）与改派口径见
-[SPEC §5.12](SPEC.md#512-组合映射口径2026-11-07-落地) —
-[§5.20](SPEC.md#520-改派的口径2026-11-11-落地)。
+[SPEC §5.12](spec/17-composition.md#512-组合映射口径2026-11-07-落地) —
+[§5.20](spec/19-reassign.md#520-改派的口径2026-11-11-落地)。
 
 ```bash
 make order-demo                                       # 端到端演示：找有售价的日期 → 下单 → 幂等重放 → 查单
@@ -255,7 +255,7 @@ make order-demo                                       # 端到端演示：找有
 预占过期（`fn_expire_holds`）、组合同步（`fn_sync_combo_calendar`）与读模型刷新
 （`fn_refresh_read_models`），再读漂移与过期现状做读侧自检。失败非零退出让调度器重试；
 作业本身幂等（靠 `UPDATE ... WHERE status = 'issued'` 的形状，不靠调度器的自觉）。
-详见 [SPEC §5.25](SPEC.md#525-作业调度的口径)。
+详见 [SPEC §5.25](spec/20-jobs.md#525-作业调度的口径)。
 演示脚本（`make order-demo`）也是自己找有售价的日期，不写死。
 
 `hold create` 不带 `--ttl` 时用默认 900 秒（不变量 119 守着「预占必须有确定的到期时间」）。
@@ -305,7 +305,7 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 
 渠道（`channel_id`）是必答的：读模型按渠道建，不按渠道过滤会把份数数成两遍。
 渠道不存在与渠道不对外服务给**同一个答复** —— 不给调用方一个能枚举渠道的探针。
-（[SPEC §5.18](SPEC.md#518-c-端只读-api-的口径2026-11-10-落地)）
+（[SPEC §5.18](spec/21-c-end-api.md#518-c-端只读-api-的口径2026-11-10-落地)）
 
 **C 端读模型的实测证据**：
 
@@ -325,7 +325,8 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 
 | 文件 | 内容 |
 |---|---|
-| [`SPEC.md`](SPEC.md) | 业务合同：范围、角色、流程、**不变量**、状态机、验收标准 |
+| [`SPEC.md`](SPEC.md) | 业务合同的**索引**：范围、角色、流程、**不变量**、状态机、验收标准 |
+| [`spec/`](spec/) | 业务合同正文：按主题域拆分，每个文件一个主题（§4 不变量与 §5 写路径同文件） |
 | [`docs/ddd.md`](docs/ddd.md) | 限界上下文、聚合边界、领域事件、归一化与路由机制、**变体与覆盖语义** |
 | [`docs/c-end-model.md`](docs/c-end-model.md) | **C 端：读模型、展示内容、购买漏斗、变体选择器** |
 | [`docs/schema-design.md`](docs/schema-design.md) | SQL / 半 SQL / NoSQL 选型论证、表清单、**变体模型（§5）**、**库存预占（§17）**、**有效期（§18）**、**组合映射（§20）**、演进路线 |
