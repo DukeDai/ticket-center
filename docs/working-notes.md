@@ -152,6 +152,7 @@ make migrate                        # 应用待应用的迁移（存量库升级
 make dbstatus                       # 看迁移状态（哪些已应用、哪些待应用）
 make refresh                        # 刷新 C 端读模型并查漂移
 make jobs                           # 跑一遍批处理作业（凭证过期 / 预占过期 / 读模型刷新）—— 一次性命令，跑完退出
+./bin/tc-connect jobs --db ticket_center --sync   # 顺带跑目录同步作业（抓 → 归一化 → 落库），要凭证
 make order-demo                     # 下单链路端到端演示（下单 → 幂等重放 → 查单）
 ./bin/tc-connect fulfill show --db ticket_center --order 7   # 查履约状态（支付/预订/出券）
 ./bin/tc-connect refund show --db ticket_center --refund 1    # 查退款单状态
@@ -174,6 +175,13 @@ make order-demo                     # 下单链路端到端演示（下单 → �
 
 ```
 */5 * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center
+```
+
+目录同步是同一条命令的一个分支（`--sync`），走自己的 cron 行 ——
+它要连外部源、要凭证，而凭证过期 / 预占过期 / 读模型刷新是纯库内维护：
+
+```
+17 * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center --sync
 ```
 
 `<日期>` 要**现查现用**：种子里所有日期是 `current_date + N`（`db/seed.sql`），

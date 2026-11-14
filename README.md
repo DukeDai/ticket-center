@@ -233,6 +233,7 @@ make order-demo                                       # 端到端演示：找有
 ./bin/tc-connect redeem overdue --db ticket_center              # 到期却还停在 issued 的券（过期作业漏跑）
 ./bin/tc-connect redeem expire  --db ticket_center              # 跑凭证过期作业（issued → expired）
 ./bin/tc-connect jobs          --db ticket_center              # 跑一遍全部批处理作业（过期 / 预占 / 读模型）
+./bin/tc-connect jobs          --db ticket_center --sync       # 顺带跑目录同步作业（要连外部源、要凭证）
 ./bin/tc-connect stock show  --db ticket_center --supplier-session 1
 ./bin/tc-connect variant feed    --db ticket_center --channel 1   # 先看哪一天有售价（下面 <日期> 从这里取）
 ./bin/tc-connect hold create --db ticket_center --no HOLD001 --channel 1 --variant 11 --qty 2 --date <日期>
@@ -257,6 +258,22 @@ make order-demo                                       # 端到端演示：找有
 作业本身幂等（靠 `UPDATE ... WHERE status = 'issued'` 的形状，不靠调度器的自觉）。
 详见 [SPEC §5.25](spec/20-jobs.md#525-作业调度的口径)。
 演示脚本（`make order-demo`）也是自己找有售价的日期，不写死。
+
+**目录同步是 `tc-connect jobs` 的一个分支**（`--sync`），不是另一条命令 ——
+作业调度有唯一入口，少一条命令就少一处「谁负责跑」的答案。
+不带 `--sync` 时这条命令**不碰外部源、不需要凭证**：
+凭证过期、预占过期、读模型刷新是纯库内维护，
+让它们依赖外部源的运行环境，等于把「某个源没配 API key」
+变成「每 5 分钟的库维护作业失败一次」。两者走各自的 cron 行：
+
+```
+*/5  * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center
+17   * * * * cd /srv/ticket-center && ./bin/tc-connect jobs --db ticket_center --sync
+```
+
+同步作业默认只跑**配置里已确认**的源（没确认的源端点是没定的，硬跑只会每次报
+「接口细节待确认」）；`--sync-supplier trip_com` 可以点名跑某一个。
+口径在 [SPEC §5.27](spec/20-jobs.md#527-目录同步作业的口径)。
 
 `hold create` 不带 `--ttl` 时用默认 900 秒（不变量 119 守着「预占必须有确定的到期时间」）。
 

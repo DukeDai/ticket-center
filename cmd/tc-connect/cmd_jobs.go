@@ -16,11 +16,16 @@
 // 「UPDATE ... WHERE status = 'issued'」这个形状，不是靠调度器的自觉。
 //
 // 这条命令不重算任何业务结论：判据全在库里，Go 侧只拼参数、只读结果。
+//
+// **目录同步是它的一个分支**（`--sync`）：同步作业要连外部源、要凭证，
+// 纯库内维护的作业不该依赖它。两者分开走各自的 cron 行，
+// 但入口只有这一条命令（spec §5.27）。
 package main
 
 import (
 	"flag"
 	"fmt"
+	"time"
 
 	"ticket-center/internal/inventory"
 	"ticket-center/internal/readmodel"
@@ -42,10 +47,33 @@ func cmdJobs(args []string) error {
 	fs := flag.NewFlagSet("jobs", flag.ExitOnError)
 	dbName := fs.String("db", "", "目标库（默认取 PGDATABASE，再默认 ticket_center）")
 	limit := fs.Int64("limit", 500, "每个批处理作业的单批上限")
+	doSync := fs.Bool("sync", false, "顺带跑目录同步作业（要连外部源、要凭证）")
+	syncSupplier := fs.String("sync-supplier", "", "只同步某个源（默认同步配置里已确认的源）")
+	syncEnv := fs.String("sync-env", "sandbox", "同步的源侧环境：sandbox | prod")
+	syncTimeout := fs.Duration("sync-timeout", 20*time.Second, "同步作业里单次请求的超时")
+	syncStart := fs.String("sync-start", "", "同步的价格日历起始日期（默认今天）")
+	syncEnd := fs.String("sync-end", "", "同步的价格日历结束日期（默认起始日 +7 天）")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	db := store.New(fulfillDB(*dbName))
+
+	// 目录同步先跑：它落的是源层事实（源商品 / 源变体 / 源报价行 / 映射），
+	// 而读模型刷新读的就是这些表（fn_refresh_read_models 走
+	// supplier_price_calendar ⋈ supplier_variant_mapping）。
+	// 同步排在刷新之后的话，本次落下的事实要等到下一轮 cron 才出现在 C 端卡片上 ——
+	// 看着像「同步了但没生效」。
+	if *doSync {
+		if err := runSyncBranch(db, syncFlags{
+			supplier: *syncSupplier,
+			env:      *syncEnv,
+			timeout:  *syncTimeout,
+			start:    *syncStart,
+			end:      *syncEnd,
+		}); err != nil {
+			return err
+		}
+	}
 
 	expired, err := redemption.New(db).ExpireOverdue(*limit)
 	if err != nil {
@@ -100,8 +128,9 @@ func cmdJobs(args []string) error {
 }
 
 func init() {
-	register("jobs", "跑一遍批处理作业（过期 / 预占 / 读模型），交给外部调度器按 cron 调", usageJobs, cmdJobs, 160)
+	register("jobs", "跑一遍批处理作业（过期 / 预占 / 读模型；--sync 顺带跑目录同步），交给外部调度器按 cron 调",
+		usageJobs, cmdJobs, 160)
 }
 
-const usageJobs = `  tc-connect jobs       [--db name] [--limit n]
+const usageJobs = `  tc-connect jobs       [--db name] [--limit n] [--sync] [--sync-supplier code]
 `

@@ -191,11 +191,17 @@ CLI：`tc-connect redeem expire`（跑作业）、`tc-connect redeem overdue`（
   （到期券比 `--limit` 多），也可能是漏跑；漏跑是**运行状态**，不是数据违规 ——
   §5.24 的口径是「看得见但不挡门禁」。让这一项挡住调度，会把一条告警变成一个死循环。
 - **这条命令不重算任何业务结论。** 判据全在库里，Go 侧只拼参数、只读结果。
+- **目录同步是它的一个分支，用 `--sync` 开**（§5.27）。
+  **不带 `--sync` 时这条命令不碰外部源、不需要凭证** ——
+  凭证过期、预占过期、读模型刷新是纯库内维护，
+  让它们依赖外部源的运行环境，等于把「某个源没配 API key」
+  变成「每 5 分钟的库维护作业失败一次」。
+  两者走各自的 cron 行，间隔仍然是运维的决定。
 
 Go 侧不变：`internal/redemption` / `internal/inventory` / `internal/readmodel`
 各自只拼参数、只读结果，作业的口径仍在库里的函数与视图。
 
-CLI：`tc-connect jobs [--db name] [--limit n]`。
+CLI：`tc-connect jobs [--db name] [--limit n] [--sync] [--sync-supplier code]`。
 
 ---
 
@@ -368,6 +374,97 @@ Trip.com 的 `listAllProducts`（`configs/api_config.json` 里 `icode_prod: null
 不在源层。源层的机器推导**不需要审批** —— 源侧报了就是事实。
 审批的对象是**映射**，不是**源商品**。
 
+##### 「人工撰写」说的是规范层的**数据**，不是映射行
+
+上面那句「规范层是人工撰写的」容易被读成「同步作业不许碰映射表」。
+**它说的是规范层的那些行**（有哪些商品码、哪些人群轴选项、哪些票种、
+哪些可售单元）—— 那是我们的商业定义，源侧不报它，
+`fixtures/canonical_catalog.json` 是它的来源。
+
+**映射行是另一回事**：它是「这个源 SKU 能不能顶这个可售单元」的判定，
+而这个判定**库里已经有唯一实现**：`fn_variant_covered(coverage, pv.id)`
+（覆盖）与 `fn_variant_coverage_is_exact(coverage, pv.id)`
+（覆盖得准不准）。同步作业**调这两个函数，不重算** ——
+重算就是第二份实现（硬约束 15、25 的同一条口径）。
+第四条也明确给了这条路：「它该对应我们哪个商品」是**判断**，
+同步作业不做，人做（**或者映射规则做，规则在 `configs/mapping_rules.json` 里**）。
+
+**所以同步作业写映射表，但写的每一条都带「这是机器判的」的痕迹**：
+
+| 列 | 机器写的值 | 为什么 |
+|---|---|---|
+| `match_type` | `'rule'` | 它是规则判的，不是人判的（人写的是 `'manual'`） |
+| `confidence` | `0.95` | 规则判的置信度封顶在 0.95 —— 留 1.000 是冒充人工确认 |
+| `is_exact` | `fn_variant_coverage_is_exact(...)` 的返回值 | 覆盖不准就是不准，不粉饰（唯一实现在库里） |
+| `match_evidence` | `{"decoded_by":"sync"}` | 留痕「谁写的」，人写的是 `{"decoded_by":"mapping_dryrun"}` |
+
+种子已经证明这条路有人走过：`product_mapping` 里 id 2 / 3 / 5 是
+`match_type` 在 (`'auto'`,`'rule'`) 之间、`created_by='system@matcher'` 的机器行，
+与 `created_by='ops@demo'` 的人工行并存；
+`supplier_variant_mapping` 里 id 21-27 正是 `'rule'` + `is_exact=false` +
+`confidence=0.950` 这个形状。
+
+##### 机器写的映射不许自己变成 `active`
+
+这条是**不变量 132-133**（§4.28）的直接后果，也是同步作业唯一
+不许含糊的地方：**待审核的事实不许漏进可用路径**。
+`fn_route_candidates` 与定价函数都只认 `status='active'` 的映射 ——
+一条 `active` 的机器映射等于「没审核就上架了」。
+
+**口径是两条，耦合在一起**：
+
+1. **变体映射（`supplier_variant_mapping`）** 的 `status`：
+   父级的**商品映射**（`product_mapping`）是 `active` 时才 `active`，
+   否则 `pending_review`。
+2. **商品映射（`product_mapping`）** 的 `status`：
+   这一对 `(supplier_product, product)` **已经有人判过**才 `active` ——
+   判过的标志是库里存在一行人工写的（`match_type='manual'` 或
+   `created_by` 不是机器写的）映射；否则 `pending_review`。
+
+**于是有两条路能走到 `active`：**
+
+- **人先判**（今天的路）：人工写了一行 `product_mapping`，
+  同步作业发现「这一对已经有人认了」，于是把机器写的变体映射也放成 `active`，
+  源商品与源变体也放成 `active`。人没认的那几对停在 `pending_review`。
+- **规则判**（机器自己走的路）：同步作业判定的那一对，
+  如果覆盖是**精确**的（`fn_variant_coverage_is_exact` 为真）
+  且这一对此前没有任何映射行，它可以直接把商品映射写成 `active` ——
+  这就是「规则做」的那一半，规则住在 `configs/mapping_rules.json` 里。
+
+**判过就是判过 —— 不管是谁判的。**
+这是上面两条路之外的一条**底线**，也是最容易漏的一条：
+规则判的那条路要求「此前没有任何映射行」——
+而规则自己判过之后，这一行**就有了**。
+下一轮同步再判一次，「没有映射行」不成立 → 落回 `pending_review` →
+变体映射跟着落回 `pending_review` → **报价行不再写**
+（只给 `active` 的映射写）→ **C 端的价格凭空消失**。
+
+所以判定是三值的，不许折成两值：
+
+| 库里那一对 | 判定 |
+|---|---|
+| 已经是 `active`（人判的，或上一轮规则判的） | **保持 `active`** |
+| 是 `pending_review`（机器认出来了但人还没认） | 保持 `pending_review` |
+| 根本没有这一行 | 覆盖精确 → 规则判成 `active`；否则不写 |
+
+**同步作业永远不许把一行已经 `active` 的映射降级成 `pending_review`。**
+降级是审批流的动作（把人撤了的判断撤掉），不是同步作业的 ——
+同步作业只往「更严」的方向走，不往「更松」的方向走。
+
+##### 同步作业不写的那几张表
+
+| 表 | 为什么不是同步作业写的 |
+|---|---|
+| `product` / `product_variant` / `product_axis` / `product_axis_option` / `ticket_type` | 规范层是人工撰写的（第三条）。同步作业**一个都不建**。 |
+| `channel_listing` / `channel_listing_source` | 「哪个商品上哪个渠道、哪个源优先」是**商品运营的决定**。同步作业建它 = 机器替运营上架了。 |
+| `product_session` / `product_session_source` | 规范场次是「我们的场次」—— 场次合并是判断（§5.27 待补，场次跨源对账那条单独做）。同步作业只落**源场次**（`supplier_session`）。 |
+
+**这条排除要写在合同里，因为它是「同步完了但 C 端看不到」的根因。**
+新同步进来的源商品**没有** `channel_listing_source` 行指着它 ——
+那一行得人加。同步作业不会报错（事实落对了），
+但那个商品**还没进可售路径**。这条不许糊过去：
+**「同步成功」不等于「能卖」，中间差一道人的动作。**
+
 #### 第四条：`pending_review` 接上，不删
 
 这个枚举**恰好住在四张表上**：`supplier_product.status`、
@@ -422,6 +519,47 @@ Trip.com 的 `listAllProducts`（`configs/api_config.json` 里 `icode_prod: null
   `skipped` / `failed`。
 - `finished_at >= started_at` 是表上的 CHECK，写的时候要满足它。
 
+**`stats` 的四个数是同一个口径**（商品粒度，不是行粒度）：
+`scanned` = 这次扫过的源商品数，
+`created` / `updated` / `skipped` = 其中新建的 / 报文变了的 / 报文没变的。
+所以 `created + updated + skipped = scanned` 恒成立 ——
+读的人不用猜「scanned 是行还是商品」。
+
+**变更检测靠 `supplier_product.content_hash`**（全表只有源商品有这一列），
+所以「这个源商品变了没有」是能判定的最小单位。
+变体与报价行跟着源商品走。
+
+**「跳过」不等于「不写」。** 商品级哈希算的是**商品详情报文**，
+报价行不在里面 —— 源侧只改价不改商品时，哈希不变（skipped），
+而那一条报价是**新事实**（C 端卡片的价格就靠它）。
+「跳过就不写」会让价格永远停在旧值 —— 读模型永远是旧的。
+所以口径是：**写路径一律幂等（同样的值写回去，事实不变），
+变更是用来报告的，不是用来决定写不写的**。
+
+**同步分支跑哪些源**：
+
+- **默认只跑配置里「已确认」的源。** 没确认的源端点是**没定的**
+  （硬约束 13：没有公开文档的接口不许编造）。硬跑它们只会每次报
+  「接口细节待确认」—— 那是噪音不是信号：它把「该源还没接通」
+  说成「同步作业坏了」。
+- **指定 `--sync-supplier` 时只跑那一个，且不要求它已确认** ——
+  运维点名要跑哪个源就是要跑它（调试与排障用）。
+- **一个源失败不中断其余的源**：中断的话，
+  「第一个源坏了，后面五个源永远同步不上」会成为常态。
+  全部跑完再统一非零退出。
+- **同步排在读模型刷新之前**：它落的是源层事实，
+  而刷新读的就是这些表（`fn_refresh_read_models` 走
+  `supplier_price_calendar ⋈ supplier_variant_mapping`）。
+  同步排在刷新之后的话，本次落下的事实要等到下一轮 cron 才出现在 C 端卡片上 ——
+  看着像「同步了但没生效」。
+
+**数字 id 不能用 `%v` 渲染。** JSON 的数字解出来是 float64，
+`fmt.Sprintf("%v", 21081935.0)` 给的是 `2.1081935e+07` ——
+那个字符串会当成源侧 id 落进库里，
+而幂等锚点 `(supplier_id, external_id)` 就废了：
+同一个源商品每次同步落成一行新的。
+唯一读法是 `layertest.IDString`。
+
 **这一条补上一个洞**：`v_supplier_sync_health.last_sync_at` 与
 `failed_jobs_24h` 今天永远读不到东西，因为**没有任何生产代码往
 `sync_job_log` 写**（只有种子写）。视图能算，但它算的是空气。
@@ -443,11 +581,95 @@ Trip.com 的 `listAllProducts`（`configs/api_config.json` 里 `icode_prod: null
   **不许把 `scripts/mapping_dryrun.py` 的 `lit()` 抄过来** ——
   那个 `lit()` 只做 `'` → `''`，不是 `internal/store` 的转义机制。
 
-**Trip.com 没有种子行。** `db/seed.sql` 里只有五个源
-（ingresso / fonticket / goodfellows_jtb / globaltix / piaofutong，id 1-5），
-**Trip.com 不在里面**。所以同步作业按 `supplier.code` 解析源行，
-解析不到就报错 —— 不许假设 id、不许自己插一行源（插源行是商务决定，
-不是同步作业的决定）。
+**同步作业按 `supplier.code` 解析源行，解析不到就报错。**
+不许假设 id、不许自己插一行源 —— 插源行是商务决定，
+不是同步作业的决定。
+
+**Trip.com 有种子行。** `db/seed.sql` 里有**七个**源，
+Trip.com 是 id 7（`trip_com` / `TCT` / `CNY`），
+zowoyoo 是 id 6（ingresso / fonticket / goodfellows_jtb / globaltix /
+piaofutong 是 id 1-5）。种子还给了它两个源商品
+（`TC-USJ-1001` / `TC-BJ-TOUR-001`）、四个 `channel_listing_source` 行
+（listing 9 / 10，priority 10 / 20 / 30）、
+以及五条 `product_mapping`（id 9-12，id 9 与 id 11 是 `is_primary`）。
+
+**所以「解析不到就报错」这条对 Trip.com 是空跑** ——
+它解析得到。真正的差别是：**种子给的是 `TC-` 开头的演示商品，
+而源侧报的是 `21081935` 这样的 productID**。
+所以一次真同步会**新建** `supplier_product` 行（external_id = 源侧 id），
+与种子里那几行不是同一批。新行**没有** `channel_listing_source` 指着它。
+
+**这就是「同步成功 ≠ 能卖」的具体形状**：
+事实落对了（源商品、源变体、源报价行都在库里），
+但那个商品**不在可售路径**上 —— 差一道人的动作：
+人要在 `channel_listing_source` 里加一行指向它，
+人要在 `product_mapping` 里认它对应哪个规范商品。
+同步作业**不替人做这一步，也不报错** ——
+它做的是把「源侧报了一个我们目录里没有的东西」落成
+`pending_review`（第四条），让审批流看得见。
+
+#### 售价行（`price_calendar`）归谁写
+
+**今天 `price_calendar` 没有写者。** 仓库里往这张表写数据的只有三处，
+三处**全是** `fn_sync_combo_calendar()` 的组合分支
+（`db/migrations/015_combo_c_end.sql:535`、
+`017_supplier_bundle.sql:2103`、`023_supply_source_count.sql:302`），
+它们只管组合。`fn_reprice_rows()` 只 UPDATE 已有的行，不 INSERT。
+Go 侧三处引用（`internal/layertest/layertest.go:469`、
+`internal/pricing/pricing.go:146`、`cmd/tc-connect/cmd_fusion.go:281`）
+**全是只读**。
+
+**所以普通商品的售价行今天是空的。** `db/seed.sql` 往 `price_calendar`
+插了 27 行，但那一批只写「要卖哪一行」（商品 / 场次 / 票种 / 渠道 / 日期），
+**钱由 `fn_price_variant` 算出来再回填**（种子第 10 节的注释原话）。
+
+**分工定成这样**：
+
+| 层 | 谁写 | 写什么 |
+|---|---|---|
+| 源层 | 同步作业（Go） | `supplier_product` / `supplier_variant` / `supplier_price_calendar` |
+| 衔接层 | 同步作业（Go） | `product_mapping` / `supplier_variant_mapping` |
+| 规范层的「哪一行要卖」 | **库函数**（新迁移） | `price_calendar` 的行本身 |
+| 规范层的「这一行卖多少钱」 | `fn_reprice_rows()`（已有） | `sell_price` / `cost_price` / `strike_price` |
+
+**为什么「哪一行要卖」放在库函数里，不放在 Go 里。**
+它要从 `supplier_price_calendar` × `active` 的 `supplier_variant_mapping`
+展开 —— 而**展开的粒度必须与 `fn_route_candidates` 完全一致**：
+`fn_route_candidates` 要求源报价行带上 `product_variant_id`
+（`spc.supplier_variant_id = sv.id AND spc.product_variant_id = p_variant_id
+AND spc.date = p_date`）。
+Go 侧要是自己展开一遍、库侧再展开一遍，
+两处的粒度迟早分叉 —— 分叉的后果是
+「选源按 A 源的价格卖、按 B 源出票」（硬约束 15）。
+
+**所以源报价行落库时就要带上 `product_variant_id`**，
+而带上它就意味着**一条源报价行要写成 N 行**（N = 它覆盖住的 `active` 变体映射数）。
+这正是 `scripts/mapping_dryrun.py` 的 `price_sql` 干的事。
+
+**冲突目标是现成的两个**（不需要第三个）：
+
+- `ux_spc_variant_scope`：`UNIQUE (supplier_variant_id, product_variant_id, date)
+  WHERE supplier_variant_id IS NOT NULL` —— 带映射的源报价行走它。
+- `ux_spc_scope_legacy`：`UNIQUE (supplier_product_id, date,
+  COALESCE(supplier_ticket_type_id,0), COALESCE(supplier_session_id,0))
+  WHERE supplier_variant_id IS NULL` —— **同步作业永远不写这种行**
+  （它写的每一行都带 `supplier_variant_id`），这个索引是留给别处的。
+
+**只给 `active` 的映射写源报价行。** 这一条同时满足三件事：
+不变量 133（`pending_review` 的映射不许漏进可用路径）、
+`fn_route_candidates` 的 `svm.status = 'active'`、
+以及硬约束 34 的份数门禁（`fn_source_quantity_limits` 走同一套候选集）。
+
+**份数区间（`min_qty` / `max_qty`）跟着源变体走。**
+源侧把份数区间报在**商品详情**的资源上，不报在价格日历的资源上，
+所以它先落在源变体的数值事实里，再**抄到那个变体的每一条源报价行**上。
+**抄，不重算** —— 源侧报的区间是一手事实，我们只搬运（硬约束 34）。
+
+**数值事实的名字住在配置里**（硬约束 4）：
+`configs/mapping_rules.json` 的 `numbers` 通道按事实名索引
+（现有的一条是 GlobalTix 的 `valid_days` ← `validityDays`）。
+**加一个新的数值事实不用改 Go 代码，只加一条规则** ——
+事实的名字住在配置里，事实名到列的映射住在写者里。
 
 #### 这条路今天走通的样子
 

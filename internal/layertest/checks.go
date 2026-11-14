@@ -267,7 +267,7 @@ func MockProtocolChecks(ctx context.Context, cfg *config.File, rules *normalize.
 		if len(ids) == 0 {
 			checks = append(checks, Check{"M8 归一化→映射→路由", StatusFail, "目录层未返回产品 id"})
 		} else {
-			pid := fmt.Sprintf("%v", ids[0])
+			pid := IDString(ids[0])
 			detail, err := adapter.GetProduct(ctx, pid)
 			if err != nil {
 				checks = append(checks, Check{"M8 归一化→映射→路由", StatusFail, err.Error()})

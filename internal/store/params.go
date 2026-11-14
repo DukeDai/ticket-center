@@ -29,9 +29,10 @@ import (
 //
 // 零值不可用，要用 NewSQL 起头。
 type SQL struct {
-	sb    strings.Builder
-	errs  []error
-	binds int
+	sb     strings.Builder
+	errs   []error
+	binds  int
+	inList bool
 }
 
 // NewSQL 起一个 SQL 累加器。args 里如果是字符串，按原样拼进 SQL
@@ -99,6 +100,65 @@ func (s *SQL) BindJSON(v any) *SQL {
 func (s *SQL) And(cond string) *SQL {
 	s.sb.WriteString(" AND ")
 	s.sb.WriteString(cond)
+	return s
+}
+
+// List 往一个逗号分隔的值列表末尾追加一项。
+//
+// 为什么要有它：VALUES (?, ?, ?)、SELECT a, b, c、IN (?, ?, ?) 这些位置
+// 的分隔符是逗号，不是 AND —— And() 在这些位置会拼出 "AND"，
+// 语法直接坏掉。
+//
+// 第一个 List 项前面不加分隔符（调用方自己写 "VALUES ("），
+// 之后的每一项前面补一个逗号。
+func (s *SQL) List(v any) *SQL {
+	s.binds++
+	if s.inList {
+		s.sb.WriteString(", ")
+	}
+	s.inList = true
+	if !isScalar(v) {
+		s.errs = append(s.errs, fmt.Errorf("列表里出现非标量值 %T：值要进 SQL 请用 BindJSON", v))
+		s.sb.WriteString("NULL")
+		return s
+	}
+	s.sb.WriteString(Quote(v))
+	return s
+}
+
+// ListJSON 往一个逗号分隔的值列表末尾追加一个 JSON 值。
+func (s *SQL) ListJSON(v any) *SQL {
+	s.binds++
+	if s.inList {
+		s.sb.WriteString(", ")
+	}
+	s.inList = true
+	raw, err := json.Marshal(v)
+	if err != nil {
+		s.errs = append(s.errs, fmt.Errorf("绑定 JSON 值失败: %w", err))
+		s.sb.WriteString("NULL")
+		return s
+	}
+	s.sb.WriteString(Quote(string(raw)))
+	s.sb.WriteString("::jsonb")
+	return s
+}
+
+// EndList 结束当前这个值列表。
+//
+// 之后的片段不再补逗号 —— 一个 SQL 里可能有多段列表
+// （VALUES 列表、SELECT 列表、IN 列表），它们各自独立。
+func (s *SQL) EndList() *SQL {
+	s.inList = false
+	return s
+}
+
+// Text 追加一段字面文本（不带任何分隔符）。
+//
+// 与 And/Or 的区别：这两个自带 " AND " / " OR "。
+// 收尾的括号、逗号、关键字这些位置要的是**原样拼接**。
+func (s *SQL) Text(t string) *SQL {
+	s.sb.WriteString(t)
 	return s
 }
 
