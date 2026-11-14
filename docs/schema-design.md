@@ -258,6 +258,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
 | `v_invariant_checks_fulfill_flat` | 履约侧 6 条有没有被破坏？（支付、预订、出券与订单履约状态一致性） |
 | `v_invariant_checks_refund` | 退款侧 4 条有没有被破坏？（退款金额、已退款订单的事实与状态一致性） |
+| `v_invariant_checks_refund_policy` | 退款承诺侧 3 条有没有被破坏？（发起时的承诺快照还在、金额等于快照里的应付额、快照的四个键齐全） |
 | `v_invariant_checks_redemption` | 核销侧 4 条有没有被破坏？（已核销必有成功记录、一张券最多成功一次、额度用尽且账对得上、核销在有效期内） |
 | `v_invariant_checks_inventory_flat` | 库存预占侧 4 条有没有被破坏？（每条明细有预占、量对得上、可售数没被扣两遍） |
 | `v_invariant_checks_validity_flat` | 有效期侧 3 条有没有被破坏？（口径不歧义、券不短于承诺、卖出去的源覆盖得住） |
@@ -661,6 +662,8 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `029_flatten_invariant_views.sql` | 五条不变量链的最终层各压成一个自包含视图：`v_invariant_checks_core_flat` / `_inventory_flat` / `_validity_flat` / `_combo_flat` / `_fulfill_flat`；链上的 17 个中间层视图（`*_base` / 中间层 / `*_017` / `v_invariant_checks_order_004`）全部 `DROP VIEW`；`v_invariant_checks` 重建为 22 个分支的 `UNION ALL` | 门禁的分组视图越叠越多（22 个视图、17 个中间层），改一条不变量要跨两层视图找它住在哪，中间层还留着「上一版口径」的留底 —— 三条链各有两代口径并排躺在库里，读的人得先猜哪一版是活的。取舍写在这里：**每条链只留最终层，自包含**（压平后一个视图就是一条链的全部）；**门禁的身份是 `check_name`，不是视图对象** —— 压平不改条数、不改口径、不改 `db/verify.sql` 的任何断言；**不留「上一版口径」的留底视图**（留底视图不是历史，是分叉 —— 有人会照着留底改，然后改错地方） |
 | `030_source_validity_window.sql` | `supplier_variant` 加 `valid_days` 列（源侧肯兑现的有效期窗口，`NULL` = 源侧没报）+ `fn_route_candidates()` 整体替换一次（候选集多一条判据：源侧报了天数且短于规范侧承诺 → 这个源不进候选）+ `v_variant_source_validity` 视图（源变体与规范变体的有效期窗口对照 + 缺口原因）+ `v_invariant_checks_source_validity` + `v_invariant_checks` 重建（不变量 122 新增） | 规范侧承诺 2 天、源侧只兑现 1 天，这个源照样赢下选源：按它的价卖出去，出的券只管一天，客户第二天到门口闸机判 expired —— 钱收了、票买了、门不认。取舍写在这里：**规范侧的承诺与源侧的兑现是两件事，落在两处**（承诺在 `product_axis_option.valid_days`，兑现在 `supplier_variant.valid_days`）；**源侧没报不拦**（源侧没给约束 = 不拦，与硬约束 34 同一条口径）；**方向是收紧不是放宽**（源报 1 天、承诺 2 天 → 这个源不进候选，不许被提升成两日票的供货）；**与套装形态同源**（`supplier_variant_bundle.valid_days` 盖不住成分窗口时套装判不可售，单张形态现在补上这条）；**已卖出的订单走退款**，不改写历史 |
 | `031_routing_validity_gate.sql` | `v_invariant_checks_source_validity` 整体替换一次（加一条候选集侧的分支）+ `v_invariant_checks` 重建（23 个分支，不变量 123 新增） | 030 把源侧的兑现窗口接进了选源，但**那条判据当时只有一个事后的门禁**（不变量 122 读已卖出的订单）。判据本身写错了（或者被人改回旧版本）时，系统照样卖得出去 —— 只是卖的时候用了兑现不起的源；等真下单了 122 才红，那时候钱已经收了。取舍写在这里：**事前事后各一条门禁**（122 读 `sales_order_item` + `booking`，123 读路由视图，走不同的表，任何一条失效都不会让另一条一起绿）；**只加门禁不改判据**（候选集怎么算在 030 里定死了，031 不动它） |
+| `032_refund_policy_enforcer.sql` | `fn_refund_policy()` 新增（退款承诺的唯一读法与执行者：读 `product.refund_policy` 与 `channel_listing.refund_policy_override` 逐字段合并、按场次算截止点、算出这一单的应付退款额）+ `fn_request_refund()` / `fn_approve_refund()` 各整体替换一次（发起与放行各判一遍承诺，金额按应付额而不是订单实付比）+ `v_invariant_checks_refund_policy` + `v_invariant_checks` 重建（24 个分支，不变量 124-126 新增） | 规范侧写了退款承诺（可退 / 截止时长 / 手续费比例），但**没有人执行它**：写路径拿 `p_amount` 与 `sales_order.total` 比 —— 承诺说有 10% 手续费，实际退给客户的是全额，承诺形同不存在。取舍写在这里：**承诺与执行者是两件事，各自只有一个读法**（承诺住 `product.refund_policy`，执行者是 `fn_refund_policy`）；**金额是净额**（`sales_refund.amount` = 实退给客户的钱 = 实付 × (1 − fee_percent)；手续费是另一次收款，不是退款项的一部分）；**发起与放行各判一次**（发起到放行之间时间在走，截止时长会被吃掉 —— 发起时距开场 50 小时、放行时距开场 30 小时，这一笔在放行时就该被挡下）；**资格取最严、手续费按明细金额加权**（任一商品不可退 ⇒ 整单不可退；截止时长取最大的；手续费比例按各明细 `total_price` 加权，按人头平均是错的）；**截止点取最早的场次**（参照 `product_session.start_at`，没有就退到 `session_date`）；**取不到参照点就不拦**（不知道截止时间不等于已过截止时间）；**承诺快照四件套**（`refundable` / `cutoff_hours` / `fee_percent` / `expected_amount`，抄进 `sales_refund.raw_payload->'policy'`，承诺会变，这笔当初按哪一版算的必须查得到） |
+| `033_refund_payload_merge.sql` | `fn_complete_refund()` 整体替换一次（`raw_payload` 改成合并而不是覆盖：`raw_payload = raw_payload || v_callback`，且回调报文不许带 `policy` 键） | `fn_complete_refund` 原来两处写 `raw_payload = COALESCE(p_raw_payload, raw_payload)`：一是 `p_raw_payload` 的默认值是 `'{}'::jsonb` 不是 NULL，**COALESCE 从来不兜底**；二是覆盖不是合并。一次不带回调报文的退款完成调用，就把发起时写下的承诺快照洗成空对象 —— 不变量 62 / 124 / 126 复查的正是「退款金额与承诺快照的对照」，右边被洗成 0，已退款的订单全部报违规。取舍写在这里：**按 018 的先例合并而不是覆盖**（同一件事在预订请求报文上已经修过一次）；**回调报文不许盖掉承诺事实**（`policy` 是我们写下的，渠道报文串了字段不该让我们的事实被改写，所以合并前先摘掉右边的 `policy`） |
 
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
 否则刷新完自己被判成漂移 —— 这条约束由 `internal/readmodel` 的测试守着
@@ -918,20 +921,81 @@ CREATE VIEW v_invariant_checks AS
 
 | 函数 | 职责 | 关键口径 |
 |---|---|---|
-| `fn_request_refund()` | 发起退款 | 整单退款；金额必须等于订单实付；幂等键必填；订单推进到 `refunding` |
-| `fn_approve_refund()` | 人工放行 | 订单状态不动（钱还没回来） |
-| `fn_complete_refund()` | 落退款结果 | 成功时一次改完事实与订单；失败时订单照原状态退回去 |
+| `fn_refund_policy()` | 退款承诺的唯一读法与执行者 | 读承诺、算截止点、算这一单的应付退款额；纯读函数 |
+| `fn_request_refund()` | 发起退款 | 整单退款；金额必须等于按承诺算出的应付退款额；幂等键必填；订单推进到 `refunding` |
+| `fn_approve_refund()` | 人工放行 | 订单状态不动（钱还没回来）；放行时重判一遍承诺 |
+| `fn_complete_refund()` | 落退款结果 | 成功时一次改完事实与订单；失败时订单照原状态退回去；报文合并而不是覆盖 |
 
-### 15.1 退款金额必须等于订单实付
+### 15.1 退款金额必须等于按承诺算出的应付退款额
 
-`fn_request_refund` 拿 `p_amount` 与 `sales_order.total` 比，不等就报错。
+`fn_request_refund` 拿 `p_amount` 与 `fn_refund_policy` 算出的应付额比，不等就报错。
 少退客户会投诉，多退公司自己承担 —— 这条要在写路径上挡，
 不能等对账时才发现少退了多少。
+
+**应付额是净额，不是订单实付。** 有手续费承诺时两者不等：
+
+```
+应付退款额 = 订单实付 × (1 − fee_percent)
+```
+
+`sales_refund.amount` 是**实退给客户的钱**。手续费本身是我们另收的一笔
+（源侧不退手续费），它记在承诺快照里，不是退款项的一部分。
+`settlement_line.fee_amount` 是源侧结算手续费，和这个也不是一件事。
+
+**承诺快照四件套。** 发起退款时把当时的承诺抄进
+`sales_refund.raw_payload->'policy'`：
+
+| 键 | 含义 |
+|---|---|
+| `refundable` | 这一单承诺可不可退 |
+| `cutoff_hours` | 承诺的截止时长（小时） |
+| `fee_percent` | 承诺的手续费比例 |
+| `expected_amount` | 当时的应付退款额 |
+
+抄下来是因为承诺会变 —— 商品改政策、渠道改覆盖之后，
+这笔退款当初是按哪一版算的必须查得到。
+
+**多个商品的单子怎么合成一条承诺。** 资格取最严的
+（任一商品不可退 ⇒ 整单不可退；截止时长取最大的那个）；
+手续费比例按各明细的 `total_price` 加权：
+
+```
+fee_pct = round(Σ(total_price × fee_percent) / Σ total_price, 6)
+```
+
+按人头平均是错的 —— 贵的那件商品才是手续费的主要来源。
+
+**截止点取最早的场次。** 参照点是 `product_session.start_at`（没有就退到
+`session_date`），取这一单所有明细里最早的那个。
+一个参照点都取不到时 `has_cutoff_point = false`，**不拦** ——
+不知道截止时间不等于已过截止时间。
+
+**发起与放行各判一次。** 承诺只在发起时判是不够的：
+发起时距开场 50 小时（承诺 48 小时）、放行时距开场 30 小时 ——
+这一笔在放行时就该被挡下。
 
 **行级退款（只退某几行）系统明确拒绝。** 它需要一张
 「优惠券 / 税费 / 折扣怎么摊到每一行」的分摊口径，还需要源侧支持部分取消 ——
 那是业务决策，不是工程决策。在这两样落地之前自己编一条分摊规则，
 就是把一个没人拍板的口径写进代码里。
+
+### 15.1.1 回调报文合并而不是覆盖
+
+`fn_complete_refund` 写 `sales_refund.raw_payload` 时是**合并**：
+
+```sql
+raw_payload = raw_payload || v_callback
+```
+
+`v_callback` 是回调报文摘掉 `policy` 键之后的部分。
+`policy` 是发起时写下的承诺事实 —— 渠道报文撞上这个键是渠道串了字段，
+不是我们要让的事实被改写，所以合并前先摘掉。
+
+覆盖的代价很具体：发起时写进 `raw_payload->'policy'` 的承诺快照被洗成空对象，
+不变量 62 / 124 / 126 复查的「退款金额与承诺快照的对照」右边变成 0，
+已退款的订单全部报违规。也就是说，**一次不带回调报文的退款完成调用，
+就把退款的事实洗没了**。同一件事在预订请求报文上已经修过一次
+（`018_booking_request_payload_merge.sql`），这里是同一个口径的第二次落地。
 
 ### 15.2 「有没有真的收到钱」看支付记录，不看订单状态
 

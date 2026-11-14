@@ -797,10 +797,11 @@ Booking 聚合（§3.3）在这里接手 Order 交给它的活：把「要出票
 
 ---
 
-### 5.7 退款写路径（2026-11-07 落地）
+### 5.7 退款写路径（2026-11-07 落地；2026-11-14 补承诺执行者）
 
 退款的写入口只有一个，全在 `db/migrations/007_refund.sql`：
 `fn_request_refund` / `fn_approve_refund` / `fn_complete_refund`。
+承诺的唯一读法是 `fn_refund_policy`（`db/migrations/032_refund_policy_enforcer.sql`）。
 
 Refund 在这里是什么聚合？**它不是 Order 的一部分** ——
 它是「一次退钱这个动作」的记录，跨在 Order 与 Payment 之间。
@@ -809,14 +810,59 @@ Order 拥有「这张单现在什么状态」，Refund 拥有「退过没有、�
 | 规则 | 落在哪 | 领域含义 |
 |---|---|---|
 | 退款作用域是整单 | `fn_request_refund` | 按行退需要摊分口径，那是业务决策不是工程决策 |
-| 退款金额必须等于订单实付 | `fn_request_refund` | 少退客户投诉，多退公司承担 |
+| 退款金额必须等于按承诺算出的应付退款额 | `fn_request_refund` + `fn_refund_policy` | 少退客户投诉，多退公司承担；应付额是净额，实付 × (1 − fee_percent) |
+| 承诺必须被执行者执行 | `fn_refund_policy`（`032`） | 规范侧写了「可退 / 截止时长 / 手续费」就得有人判，判定只有一个实现 |
+| 发起与放行各判一次承诺 | `fn_request_refund` / `fn_approve_refund` | 发起到放行之间时间在走，截止时长会被吃掉 |
 | 有没有收到钱看支付记录 | `fn_request_refund` 查 `sales_payment` | 订单状态是人写的，支付记录是事实 |
 | 幂等键必填，同键异内容报错 | `fn_request_refund` | 重放一次退款就是多退一次钱 |
 | 发起即进 `refunding` | `fn_request_refund` | 免得一边退一边出票 |
 | 失败退回去 | `fn_complete_refund` + `previous_order_status` | 退款失败不是订单完了，订单要能接着走 |
 | 退成功事实一起改 | `fn_complete_refund` | 退了钱，明细/凭证/预订/支付/订单必须一起变 |
+| 报文合并而不是覆盖 | `fn_complete_refund`（`033`） | 一次回调不许把写下的承诺快照洗掉 |
 | 票已核销不许整单退 | `fn_request_refund` | 票用掉了该不该退是业务判断，不是函数判断 |
 | 必须先放行才能落结果 | `fn_complete_refund`（`016`） | 放行是必经之路；放行人留痕（`approved_by`） |
+
+**承诺与执行者是两件事，各自只有一个读法。** 规范侧承诺住
+`product.refund_policy`（可退 / 截止时长 / 手续费比例），渠道侧覆盖住
+`channel_listing.refund_policy_override`（逐字段覆盖，不是整份换掉）。
+**承诺本身不是判定** —— 承诺是「我们答应客户什么」，
+执行者是「现在这一笔退不退、退多少」。`fn_refund_policy` 是唯一的执行者：
+它读承诺、按场次算截止点、算出这一单的应付退款额。
+发起与放行各调它一次 —— 只在发起时判不够：
+发起时距开场 50 小时（承诺 48 小时）、放行时距开场 30 小时，
+这一笔在放行时就该被挡下。
+
+**承诺快照四件套。** 发起退款时把当时的承诺抄进
+`sales_refund.raw_payload->'policy'`（`refundable` / `cutoff_hours` /
+`fee_percent` / `expected_amount`）。抄下来是因为承诺会变 ——
+商品改政策、渠道改覆盖之后，这笔退款当初是按哪一版算的必须查得到。
+
+**退款金额是净额，手续费是另一次收款。** `sales_refund.amount` 是**实退给客户的钱**，
+不是订单实付。有手续费承诺时两者不等：应付额 = 实付 × (1 − fee_percent)。
+手续费本身是我们另收的一笔（源侧不退手续费），它记在承诺快照里，
+不是退款项的一部分。`settlement_line.fee_amount` 是源侧结算手续费，
+和这个也不是一件事。
+
+**多个商品的单子怎么合成一条承诺。** 资格取最严的
+（任一商品不可退 ⇒ 整单不可退；截止时长取最大的那个）；
+手续费比例按各明细的 `total_price` 加权
+（`fee_pct = round(Σ(total_price × fee_percent) / Σ total_price, 6)`）。
+按人头平均是错的 —— 贵的那件商品才是手续费的主要来源。
+
+**截止点取最早的场次。** 参照点是 `product_session.start_at`（没有就退到
+`session_date`），取这一单所有明细里最早的那个。
+一个参照点都取不到时 `has_cutoff_point = false`，**不拦** ——
+不知道截止时间不等于已过截止时间。
+
+**回调报文不许盖掉承诺快照。** `fn_complete_refund` 原来写
+`raw_payload = COALESCE(p_raw_payload, raw_payload)`：一是
+`p_raw_payload` 的默认值是 `'{}'::jsonb` 不是 NULL，COALESCE 从来不兜底；
+二是覆盖不是合并。一次不带回调报文的退款完成调用，就把承诺快照洗成空对象 ——
+不变量 62 / 124 / 126 复查的正是「退款金额与承诺快照的对照」，
+右边被洗成 0，已退款的订单全部报违规。
+`db/migrations/033_refund_payload_merge.sql` 改成合并
+（`raw_payload = raw_payload || v_callback`），并且回调报文不许带 `policy` 键 ——
+那是我们写下的承诺事实，渠道串了字段不该让我们的事实被改写。
 
 **为什么退款不是订单状态机的一条边。** 订单状态机（§5.1）描述的是
 「这张单走到哪一步了」。退款是**对这张单做的一次动作**，可能失败、可能重试、

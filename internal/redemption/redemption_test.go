@@ -154,6 +154,23 @@ func openWindow(t *testing.T, db *store.DB, voucherID int64) {
 	}
 }
 
+// payableAmount 向库问「按承诺该退多少」。
+//
+// fn_refund_policy 是退款承诺的唯一读法 —— 测试也不另算一遍，
+// 免得 Go 侧与库里的口径分叉（那正是这套门禁要防的事）。
+// 有手续费承诺时应付额不等于订单实付，拿实付去发起会被当场挡下。
+func payableAmount(t *testing.T, db *store.DB, orderID int64) string {
+	t.Helper()
+	s, err := db.Scalar(`SELECT expected_amount::text FROM fn_refund_policy(` + store.Quote(orderID) + `);`)
+	if err != nil {
+		t.Fatalf("读应付退款额失败：%v", err)
+	}
+	if s == "" {
+		t.Fatalf("订单 %d 没有应付退款额", orderID)
+	}
+	return s
+}
+
 // invariantsGreen 断言全库不变量全绿。
 func invariantsGreen(t *testing.T, db *store.DB) {
 	t.Helper()
@@ -363,7 +380,7 @@ func TestRedeemRefundedVoucherIsRevoked(t *testing.T) {
 	rs := refund.New(db)
 	res0, err := rs.RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-RD-REVOKED",
 	})
 	if err != nil {
@@ -397,7 +414,7 @@ func TestRedeemOnRefundingOrderIsFailed(t *testing.T) {
 	// 先发起退款：订单进入 refunding。
 	if _, err := refund.New(db).RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-RD-001",
 	}); err != nil {
 		t.Fatalf("发起退款失败：%v", err)
@@ -519,7 +536,7 @@ func TestRedeemThenRefundIsRejected(t *testing.T) {
 	// 票已经用了，整单退款必须被挡下 —— 这条分支现在是真的能走到的了。
 	_, err := refund.New(db).RequestRefund(refund.Request{
 		OrderID:        o.ID,
-		Amount:         o.Total,
+		Amount:         payableAmount(t, db, o.ID),
 		IdempotencyKey: "RF-RD-AFTER-REDEMPT",
 	})
 	if err == nil {

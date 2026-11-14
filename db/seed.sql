@@ -1748,8 +1748,12 @@ BEGIN
         NULL, NULL, ARRAY['ZWO99201','ZWO99202','ZWO99203']);
 
     -- 退款：发起 → 放行 → 完成
+    -- 金额向库问「按承诺该退多少」（fn_refund_policy 是唯一读法），
+    -- 不在种子里自己算 —— 算一遍就是第二份实现（硬约束 14/20）。
     SELECT r.refund_id INTO v_refund_id
-      FROM fn_request_refund(v_order_id, v_total, '组合套餐整单退款', 'seed', 'idem-refund-combo-001') r;
+      FROM fn_request_refund(v_order_id,
+                             (SELECT expected_amount FROM fn_refund_policy(v_order_id)),
+                             '组合套餐整单退款', 'seed', 'idem-refund-combo-001') r;
 
     IF v_refund_id IS NULL THEN
         RAISE EXCEPTION '组合套餐退款发起失败';
@@ -2596,8 +2600,12 @@ BEGIN
         NULL, NULL, ARRAY['ZWO99401','ZWO99402','ZWO99403']);
 
     -- 退款：发起 → 放行 → 完成
+    -- 金额向库问「按承诺该退多少」（fn_refund_policy 是唯一读法），
+    -- 不在种子里自己算 —— 算一遍就是第二份实现（硬约束 14/20）。
     SELECT r.refund_id INTO v_refund_id
-      FROM fn_request_refund(v_order_id, v_total, '套装整单退款', 'seed', 'idem-refund-bundle-001') r;
+      FROM fn_request_refund(v_order_id,
+                             (SELECT expected_amount FROM fn_refund_policy(v_order_id)),
+                             '套装整单退款', 'seed', 'idem-refund-bundle-001') r;
 
     IF v_refund_id IS NULL THEN
         RAISE EXCEPTION '套装退款发起失败';

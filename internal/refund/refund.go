@@ -36,11 +36,13 @@ func New(db *store.DB) *Service { return &Service{db: db} }
 
 // Request 是发起退款的请求。
 //
-// Amount 是十进制文本（如 "368.00"），必须等于订单实付金额。
+// Amount 是十进制文本（如 "1490.83"），必须等于**按该单退款承诺算出的应付退款额**。
+// 不是订单实付 —— 有手续费承诺时两者不等：应付额 = 实付 × (1 − fee_percent)。
+// 应付额向库问：SELECT expected_amount FROM fn_refund_policy(order_id)。
 // 这里刻意不给 float64：金额用二进制浮点过一遍就已经丢精度了（硬约束 5）。
 type Request struct {
 	OrderID int64
-	// Amount 是退款金额，必须等于订单实付金额（整单退款）。
+	// Amount 是退款金额，必须等于应付退款额（整单退款）。
 	Amount string
 	// Reason 是退款原因（留痕用）。
 	Reason string
@@ -63,10 +65,12 @@ type Refund struct {
 
 // RequestRefund 发起一笔整单退款。
 //
-// 幂等由库里的 fn_request_refund 保证：
+// 幂等与门禁由库里的 fn_request_refund 保证：
 //   - 同一幂等键重复发起 → 返回原来的退款单，Requested=false；
 //   - 同一幂等键配不同内容 → 报错（重放一次就是多退一次钱）；
-//   - 金额不等于订单实付 → 报错；
+//   - 金额不等于应付退款额 → 报错；
+//   - 承诺不可退 → 报错；
+//   - 距开场不足 cutoff_hours → 报错；
 //   - 没有成功的支付记录 → 报错（没收到钱退什么）；
 //   - 券已核销 → 报错（票已经用了，退钱要人工处理）。
 func (s *Service) RequestRefund(req Request) (*Refund, error) {
@@ -133,6 +137,11 @@ type Approval struct {
 //
 // 有些退款要先过一道人工（金额大、客服代客操作）。放行只是把退款单
 // 挪到 approved，订单状态不动 —— 钱还没回来。
+//
+// 放行时库里会**重判一遍退款承诺**（fn_approve_refund 调 fn_refund_policy）：
+// 发起到放行之间有时间差，cutoff_hours 会被这段时间吃掉。
+// 发起时距开场 50 小时（承诺 48 小时）、放行时距开场 30 小时 —— 这一笔
+// 在放行时就该被挡下。
 func (s *Service) ApproveRefund(refundID int64, approvedBy string) (*Approval, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("放行退款需要数据库连接")
