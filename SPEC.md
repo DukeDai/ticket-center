@@ -439,7 +439,7 @@
 
 ### 4.9 履约侧不变量（55-60，2026-11-07 补充）
 
-履约侧的门禁单独住在 `v_invariant_checks_fulfill` 里，
+履约侧的门禁单独住在 `v_invariant_checks_fulfill_flat` 里，
 拆开住的理由同上：不把已有条目抄一遍。
 
 | # | 不变量 |
@@ -508,7 +508,7 @@
 ### 4.12 库存预占侧不变量（69-72，2026-11-07 补充）
 
 售出多少是事实，库存口径只有一处：`fn_available_qty`（可售数的唯一实现）、
-`fn_reserve_qty`（扣减的唯一实现）。门禁住在 `v_invariant_checks_inventory` 里。
+`fn_reserve_qty`（扣减的唯一实现）。门禁住在 `v_invariant_checks_inventory_flat` 里。
 
 | # | 不变量 |
 |---|---|
@@ -531,7 +531,7 @@
 ### 4.13 有效期侧不变量（73-75，2026-11-07 补充）
 
 有效期是异构产品之间最容易被抹平的一条差异：源侧有两日票，我们发出来的券只管一天，
-客户第二天拿着付过钱的票到门口，闸机判过期。门禁住在 `v_invariant_checks_validity` 里。
+客户第二天拿着付过钱的票到门口，闸机判过期。门禁住在 `v_invariant_checks_validity_flat` 里。
 
 | # | 不变量 |
 |---|---|
@@ -571,7 +571,7 @@
 
 - **方向 A**（已有）：一个源 SKU 覆盖多个规范变体 —— zowoyoo 的 `ZWO-1D-BASE`
   一个源变体同时能装出成人 / 儿童 / 老年三个可售单元。
-  门禁住在 `v_invariant_checks_core` 里（第 30、43 条等）。
+  门禁住在 `v_invariant_checks_core_flat` 里（第 30、43 条等）。
 - **方向 B**（本节）：一个规范变体由多个源 SKU 按数量组成 —— GlobalTix 的
   「家庭套餐（2 大 1 小）」，源侧是**一条**组合表达式
   （`80041201-8004120101|2 + 80041201-8004120102|2 + ...`），源侧一次预订就下完。
@@ -597,7 +597,7 @@
 ### 4.16 组合售卖侧不变量（82-88，2026-11-07 补充）
 
 §4.15 的四条管的是**映射**对不对得上。组合真的卖出去之后，
-还有七件事必须成立 —— 门禁住在 `v_invariant_checks_combo` 里。
+还有七件事必须成立 —— 门禁住在 `v_invariant_checks_combo_flat` 里。
 
 | # | 不变量 |
 |---|---|
@@ -1461,7 +1461,7 @@ GlobalTix 官方示例的「家庭套餐」就是这一种：2 份成人门票 +
 | `supplier_variant_composition` | 组合映射的源侧配方：组合 ← 若干源 SKU × 数量 |
 | `v_variant_composition` | 两侧并排：规范侧声明的组件与数量 ↔ 源侧的 SKU 与数量 |
 | `v_invariant_checks_composition` | 组合映射侧不变量（78-81） |
-| `v_invariant_checks_combo` | 组合售卖侧不变量（82-86） |
+| `v_invariant_checks_combo_flat` | 组合售卖侧不变量（82-88） |
 
 写路径的落点在 Go 侧的 `internal/compose`：把源侧的组合表达式解成配方、
 核上规范侧的组件声明、核数量，写进 `supplier_variant_composition`（幂等，可重复执行）。
@@ -1552,7 +1552,7 @@ CLI 是 `tc-connect compose plan|apply`。
 | `fn_bound_supplier_session()` | 场次级绑定的唯一实现：规范场次 + 源商品 → 源场次 |
 | `v_order_item_source` | 成分对账：每行成分的源、数量、成本、份数、订了没有、发了几张券 |
 | `v_combo_price_gap` | 组合当天为什么不可售：差在哪、缺什么、多少钱 |
-| `v_invariant_checks_combo` | 组合售卖侧不变量（82-88） |
+| `v_invariant_checks_combo_flat` | 组合售卖侧不变量（82-88） |
 
 **这一段还改了一处 009 的口径**：`fn_available_qty` 的池子归属。
 源侧只报场次合计（票种为空的快照行）时，那个池子是**全票种共享**的，
@@ -2413,6 +2413,7 @@ Go、psql、脚本都一样。完整清单见 `state_transition` 表。
 
 | 日期 | 变更 | 影响 |
 |---|---|---|
+| 2026-11-14 | **不变量视图的「层」压平（029）**：新增 `db/migrations/029_flatten_invariant_views.sql` —— 把门禁 `v_invariant_checks` 的五条链（core / inventory / validity / combo / fulfill）的最终层压成五个自包含视图（`v_invariant_checks_core_flat` / `inventory_flat` / `validity_flat` / `combo_flat` / `fulfill_flat`，链上的基线内容内联进去），`v_invariant_checks` 改指向这五个，其余 17 段原样不动，然后删掉链上被取代的 17 个中间层视图（`*_base` / 中间层 / `*_017` / `v_invariant_checks_supply` / `v_invariant_checks_variant` / `v_invariant_checks_order_004`）；**门禁口径一条未改**（实测 121 行 / 121 个 check_name / 0 条 `actual > 0`，改动前后的快照 `EXCEPT ALL` 双向为空）；视图对象从 63 个降到 51 个；`SPEC.md` §4 验收矩阵与 `docs/schema-design.md` §4.18 的视图表同步改名 | 门禁 `v_invariant_checks` 是一条 UNION ALL，每段由一个迁移拼上去；改口径时**旧的那段没被删**，只是没人再往并集里 UNION 它。于是库里躺着 17 个「看起来在守门禁、其实只是链路中间层」的视图 —— 读的人得顺着五层依赖才能看清一条门禁到底在算什么，改一条口径要在五层里找它在哪层被改写。压平把每条链的最终层就地改写成自包含视图，中间层全删，读一条门禁只要看一个视图。取舍写在这里：**能删是因为门禁的身份是 `check_name` 不是视图对象** —— 压平视图逐行复刻最终层的结果，`v_invariant_checks` 换过去后行数、check_name、expected、actual 逐行一致（不是「差不多一致」，是快照双向 `EXCEPT ALL` 为空）；**这次只重排对象，不改门禁口径**（一条不变量都没加、没删、没改）；**删的顺序是「先上层后下层」**，不用 CASCADE（依赖还在就报错，不静默连坐）。压平时的**列序**这一步出过事故，值得写下来：每层的基线读法有两种形状 —— 3 列（`seq, check_name, actual`）或 4 列（`seq, check_name, expected, actual`），压平后的 CTE 声明四列，基线读法必须按**规范列序**投影（源视图是 3 列时写 `seq, check_name, 0, actual`）；照着源视图的位置顺序写（`seq, check_name, actual, 0`）会把 `actual` 顶进 `expected` 槽、把 `actual` 写成 0 —— **继承来的违规被静默吃掉**。这类错在「所有 actual 都是 0」的干净库里查不出来（0 和 0 相等），只有真的造一条违规、门禁必须报红时才暴露，所以回归测试必须造违规而不是只看干净库全绿 |
 | 2026-11-13 | **值进 SQL 的转义从约定变成机制（§5.26）**：`internal/store` 新增 `NewSQL` / `Bind` / `BindAll` / `BindJSON` / `And` / `Or` / `Where`（绑定时转义，非标量直接报错并指路 `BindJSON`）与 `Quote`（字符串字面量）/ `QuoteIdent`（标识符）；新增 `internal/sqllint` + `cmd/tc-lint`（扫 AST，把「值拼进 SQL 的引号位置且没经过转义」报出来），门禁挂在 `make check` 与 CI 上；`internal/capi/products.go` / `internal/migrate/migrate.go` / `internal/variant/variant.go` 三处改为走绑定机制；`AGENTS.md` 硬约束 40 与 `docs/integrations.md` 第 11 条同步；**无迁移** | psql 是子进程，没有 `$1` 占位符，SQL 全是拼出来的 —— 唯一的防线是「记得调 `store.Quote`」，而「记得」是约定不是机制，约定迟早被漏掉一次，漏掉的那一次就是注入（一次注入就是一次数据泄露，而「记得转义」在被赶工的时候是第一个被省掉的）。取舍写在这里：**门禁盯带引号的位置**（`'%s'` 里插进来的值会闭合引号，是真问题），**放过裸数值位置**（`col = %s` 插进来的值不带引号，字符串内容打断不了它 —— 但它同样不是转义过的字面量，所以写查询优先用 `store.NewSQL`，它不留这个口子）；**包级常量与编译期字面量不算问题**（门禁噪音多了就没人看了，判据宁放过不误伤）。门禁会放过两种真问题，所以它是第一道不是唯一一道 —— 这是设计上的取舍，不是漏洞，文档里写明了 |
 | 2026-11-13 | **作业调度落地（§5.25）**：新增 `cmd/tc-connect/cmd_jobs.go`（`tc-connect jobs`）与 `make jobs`：一次跑完凭证过期（`fn_expire_vouchers`）/ 预占过期（`fn_expire_holds`）/ 组合同步（`fn_sync_combo_calendar`）/ 读模型刷新（`fn_refresh_read_models`），再读 `v_c_readmodel_drift` 与 `v_voucher_expiry_overdue` 做读侧自检；新增 §5.25 与 §7 验收项；**无迁移**（判据与作业本体全在库里，Go 侧只拼参数、只读结果） | 上一条落地了 `fn_expire_vouchers`，但**作业在库里没人调它** —— 判据、幂等、事件全对，只要没人跑，券的状态还是停在 `issued`，那个状态洞原样存在。补作业而不补调度，是把「没人跑」从「没人知道」变成「以为有人跑」。取舍写在这里：**一次跑完就退出**（不常驻、不自己排期 —— 常驻进程要处理信号、重启、漂移、跨库切换，那是调度器的活）；**间隔不写在代码里**（写死就成了第二份口径，改的时候要改两处，改漏一处没人知道），交给系统 cron 或 k8s CronJob；**失败非零退出**，重试交给调度器；**作业幂等**靠的是「`UPDATE ... WHERE status = 'issued'`」这个形状，不是靠调度器的自觉，限批（默认 500）是同一件事的另一半；**刷新后仍漂移非零退出**（读模型刚刷新过还对不上就是硬事实 —— 这条是**防御性断言**，刷新本身就是修复机制，手改出来的漂移会被修好，所以它是最后一道防线不是常规路径）；**到期却还停在 `issued` 只报告不失败**（那是运行状态不是数据违规，§5.24 的口径是「看得见但不挡门禁」—— 让它挡住调度，会把一条告警变成一个死循环） |
 | 2026-11-13 | **凭证过期作业落地（028）**：新增 `db/migrations/028_voucher_expiry.sql`：`fn_expire_vouchers(p_limit INTEGER DEFAULT 500)` 把 `valid_to` 已过的 `issued` 券推进到 `expired`（幂等、限批、按 `valid_to, id` 排序）；新增 `fn_delivered_voucher_statuses()`（`issued` / `used` / `expired` = 交付过），并把 `fn_apply_order_fulfillment` / `fn_reassign_order_item` / `fn_issue_voucher` 与诊断视图里散落的 `IN ('issued','used')` 改读这个谓词；不变量从 119 条扩到 121 条（120 过期券必须有有效期终点 / 121 过期券必须已出票）；新增 §4.27 与 §5.24；新增 `v_voucher_expiry_overdue`（作业漏跑看得见，但不挡门禁）；Go 侧 `internal/redemption` 加 `ExpireOverdue` / `ShowOverdue`，CLI 加 `tc-connect redeem expire` / `redeem overdue`；回归测试三条（推进 + 幂等 / 事件自动落 / 别的状态不动） | 008 的核销路径刻意**只落核销记录、不改券状态**（「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改」）—— 那句话当时是承诺，兑现它的那一半一直缺着。缺口不是「少一个功能」，是**一个看得见的状态洞**：券的有效期过了，券的状态还停在 `issued`，两个地方说的不是同一件事（券能被扫成「过期」，券本身还说「我还是有效的、还没用过」）。更要命的是**「交付过」的口径漏了 `expired`**：库里到处用 `status IN ('issued','used')` 表示「这张票给过客户」，而 `expired` 同样表示交付过 —— 不改的话，券一过期，订单的履约状态会从 `fulfilled` 翻成未履约、已出票的明细会变成可改派（一次交付两次出票）。取舍写在这里：**交付过 = `issued` / `used` / `expired`**（`void` / `refunded` 才是「没交付」或「收回」），用一个共享谓词 `fn_delivered_voucher_statuses()` 读，不在五处各写一遍 IN 列表（抄五遍的口径，迟早有一处漏）；**作业只 UPDATE 不自己插事件**（`trg_voucher_status_event` 自动落 `VoucherExpired`，手插事件就绕过了状态机）；**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态不是数据违规，堵在门禁里只会让作业跑不成；`v_voucher_expiry_overdue` 让它看得见）；**作业不碰订单状态**（`fulfillment_status` 是推导值，由 `fn_apply_order_fulfillment` 推导，作业去写它就是两份实现）。判据是**券自己的 `valid_to`**，不是订单日期、不是可售单元的承诺 —— 券的有效期窗口是发券时定下的事实 |

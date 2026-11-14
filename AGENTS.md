@@ -507,6 +507,7 @@ db/migrations/025_*.sql        源侧的售卖份数区间（fn_source_quantity_
 db/migrations/026_*.sql        按团报价的单位价口径（fn_unit_amount）—— 总价 → 单位价只有一个实现，写路径与待改派清单同口径
 db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory 归一 NULL → 900 秒）—— 默认值住在库里，不住在调用方
 db/migrations/028_*.sql        凭证过期作业（fn_expire_vouchers）—— 券过期了由作业统一改，「交付过」口径补上 expired
+db/migrations/029_*.sql        不变量视图压平（v_invariant_checks_*_flat）—— 五条链的最终层各自压成自包含视图，中间层全删
 db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）
 db/verify.sql                 验收查询（46 组视图查询 + 不变量断言，条数见 make counts）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / jobs / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）

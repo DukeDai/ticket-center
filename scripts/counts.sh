@@ -20,6 +20,7 @@
 #   mock 断言数    —— `tc-connect mock` 的输出末尾那行「合计」
 #   库对象数       —— pg_class / pg_indexes / pg_trigger / pg_constraint（各按它的口径，别换）
 #   种子行数       —— 每张种子表的实际行数（表名写全，标签不许含糊）
+#   迁移文件数     —— db/migrations/*.sql 的文件数（迁移演进表要跟它对上）
 #
 # 用法：
 #   scripts/counts.sh              库的部分跳过（没有库也能跑）
@@ -85,6 +86,11 @@ if psql -h 127.0.0.1 -d "$DB" -tAc "SELECT 1 FROM pg_namespace WHERE nspname='pu
 else
   echo "（库 $DB 不可用 —— 先跑 make db）"
 fi
+
+echo ""
+echo "=== 迁移 ==="
+
+printf '迁移文件数      %s\n' "$(find db/migrations -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')"
 
 echo ""
 echo "=== Go 单元测试 ==="
