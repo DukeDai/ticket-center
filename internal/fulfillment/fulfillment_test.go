@@ -987,17 +987,18 @@ func TestComboBookingIsOnePerSourceSKU(t *testing.T) {
 	invariantsGreen(t, db)
 }
 
-// TestInvariant88CatchesUncoveredComponent 不变量 88 必须真的能抓到漏订。
+// TestBookingComponentAlignmentCatchesUncoveredComponent 「预订与成分必须双向对齐」
+// 这条不变量必须真的能抓到漏订。
 //
 // 门禁最怕的不是红，是「一直绿，但绿得没有意义」。
-// 88 的第一半曾经写成「不存在一个被预订覆盖的成分」——
+// 它的第一半曾经写成「不存在一个被预订覆盖的成分」——
 // 只要有一个成分被覆盖就放过：家庭套餐订了成人没订儿童，照样绿灯。
 //
 // 这种洞光读视图看不出来，只有反着验才知道它在不在。
 // 两个场景都要盖：
 //   - 部分漏订：成分有一个没被预订覆盖（老洞就在这里）；
 //   - 悬空预订：订了个谁也不要的源 SKU。
-func TestInvariant88CatchesUncoveredComponent(t *testing.T) {
+func TestBookingComponentAlignmentCatchesUncoveredComponent(t *testing.T) {
 	db := seeded(t)
 
 	orderID, _ := placeComboOrderWithBooking(t, db, "ff-combo-gap-001")
@@ -1010,8 +1011,8 @@ func TestInvariant88CatchesUncoveredComponent(t *testing.T) {
 		t.Fatalf("订单 %d 没有明细", orderID)
 	}
 
-	// 正常形状下 88 是绿的。
-	if v := invariantActual(t, db, 88); v != 0 {
+	// 正常形状下这条门禁是绿的。
+	if v := invariantActual(t, db, invariantBookingComponentAlignment); v != 0 {
 		t.Fatalf("订单刚建好预订时不该有违规，实际 %d", v)
 	}
 
@@ -1037,16 +1038,16 @@ func TestInvariant88CatchesUncoveredComponent(t *testing.T) {
 		t.Fatalf("造漏订成分失败：%v", err)
 	}
 
-	if v := invariantActual(t, db, 88); v == 0 {
-		t.Fatalf("漏订了一个成分，88 必须报 FAIL，实际还是 0")
+	if v := invariantActual(t, db, invariantBookingComponentAlignment); v == 0 {
+		t.Fatalf("漏订了一个成分，「预订与成分必须双向对齐」必须报 FAIL，实际还是 0")
 	}
 }
 
-// TestInvariant88CatchesDanglingBooking 悬空预订也要被抓到。
+// TestBookingComponentAlignmentCatchesDanglingBooking 悬空预订也要被抓到。
 //
 // 订了个谁也不要的源 SKU = 白花源侧的钱。
 // 这一半和上一半是两头：上一半看「成分有没有被覆盖」，这一半看「预订有没有被需要」。
-func TestInvariant88CatchesDanglingBooking(t *testing.T) {
+func TestBookingComponentAlignmentCatchesDanglingBooking(t *testing.T) {
 	db := seeded(t)
 
 	orderID, _ := placeComboOrderWithBooking(t, db, "ff-combo-dangle-001")
@@ -1056,7 +1057,7 @@ func TestInvariant88CatchesDanglingBooking(t *testing.T) {
 		t.Fatalf("查明细失败：%v", err)
 	}
 
-	if v := invariantActual(t, db, 88); v != 0 {
+	if v := invariantActual(t, db, invariantBookingComponentAlignment); v != 0 {
 		t.Fatalf("订单刚建好预订时不该有违规，实际 %d", v)
 	}
 
@@ -1078,25 +1079,35 @@ func TestInvariant88CatchesDanglingBooking(t *testing.T) {
 		t.Fatalf("造悬空预订失败：%v", err)
 	}
 
-	if v := invariantActual(t, db, 88); v == 0 {
+	if v := invariantActual(t, db, invariantBookingComponentAlignment); v == 0 {
 		t.Fatalf("悬空预订必须报 FAIL，实际还是 0")
 	}
 }
 
+// invariantBookingComponentAlignment 是「订单进入预订阶段后，预订与成分必须双向对齐」
+// 这条不变量的 check_name。
+//
+// 按 check_name 定位，不按 seq：seq 会随着加条重新编号，
+// 按序号定位的那天，重排一次就静悄悄指到别的门禁上去了。
+const invariantBookingComponentAlignment = "订单进入预订阶段后，预订与成分必须双向对齐"
+
 // invariantActual 读某条不变量的 actual（违规条数）。
-func invariantActual(t *testing.T, db *store.DB, seq int) int {
+//
+// 按 check_name 找，不按 seq 找：seq 会随着加条重新编号，
+// 按序号定位的那天，重排一次就静悄悄指到别的门禁上去了。
+func invariantActual(t *testing.T, db *store.DB, checkName string) int {
 	t.Helper()
-	s, err := db.Scalar(`SELECT actual::text FROM v_invariant_checks WHERE seq = ` +
-		strconv.Itoa(seq) + `;`)
+	s, err := db.Scalar(`SELECT actual::text FROM v_invariant_checks WHERE check_name = ` +
+		store.Quote(checkName) + `;`)
 	if err != nil {
-		t.Fatalf("读不变量 %d 失败：%v", seq, err)
+		t.Fatalf("读不变量 %q 失败：%v", checkName, err)
 	}
 	if s == "" {
-		t.Fatalf("没有不变量 %d", seq)
+		t.Fatalf("没有不变量 %q", checkName)
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		t.Fatalf("不变量 %d 的 actual 不是整数：%q", seq, s)
+		t.Fatalf("不变量 %q 的 actual 不是整数：%q", checkName, s)
 	}
 	return n
 }
