@@ -398,6 +398,20 @@ Trip.com 的 `listAllProducts`（`configs/api_config.json` 里 `icode_prod: null
 | `is_exact` | `fn_variant_coverage_is_exact(...)` 的返回值 | 覆盖不准就是不准，不粉饰（唯一实现在库里） |
 | `match_evidence` | `{"decoded_by":"sync"}` | 留痕「谁写的」，人写的是 `{"decoded_by":"mapping_dryrun"}` |
 
+**人工行的判定依据不许被机器覆盖。** 上表是**机器写的行**的形状；
+已经有人判过的那一行（`match_type='manual'`，或 `created_by` 不是机器写的名字），
+它的 `match_evidence` 原样留着 —— 同步作业只更新机器自己写过的那一份。
+
+**为什么**：`match_evidence` 是「判定依据 JSON」（`docs/schema-design.md` §3.1），
+用处就是让匹配**可解释、可人工复核**。人工写下 `{"signals":[...],"decided_by":"ops@demo"}`
+之后被换成 `{"decoded_by":"sync"}`，丢的是两样东西：
+人工**为什么**这么判的（依据没了），以及这一行**是谁写的**
+（开始说「机器写的」，而机器写的行恰恰是待审核的那类）。
+
+**所以「谁写的」这一栏，机器只许写机器自己的那一份。**
+这与上面「状态只升不降」是同一条方向：**同步作业只往「更严」的方向走** ——
+洗掉人的判断依据是往「更松」的方向走（把人工的判断抹成机器的）。
+
 种子已经证明这条路有人走过：`product_mapping` 里 id 2 / 3 / 5 是
 `match_type` 在 (`'auto'`,`'rule'`) 之间、`created_by='system@matcher'` 的机器行，
 与 `created_by='ops@demo'` 的人工行并存；

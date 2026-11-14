@@ -18,6 +18,24 @@ import (
 // 这几个名字是**机器写者**的署名 —— 人写的是 'ops@demo' 这类。
 var machineWriters = []string{"system@matcher", "dryrun", "sync"}
 
+// machineWriterLits 是 machineWriters 的**转义后字面量**列表，
+// 供拼进 SQL 的 NOT IN (...) 用（硬约束 40：值进 SQL 先转义）。
+//
+// 为什么单独留一份：plan.go 的 humanJudged 与 apply.go 的判定依据更新
+// 要问的是**同一个问题**（「这一行是不是人写的」）。两份口径分开放，
+// 迟早有一份改了另一份没改 —— 一份说「是机器写的」另一份说「是人写的」，
+// 同一个行两个答案。这里只留一个来源。
+var machineWriterLits = quoteAll(machineWriters)
+
+// quoteAll 把一组字符串转成 SQL 字面量列表（带引号、可直接拼进 IN / NOT IN）。
+func quoteAll(vals []string) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, store.Quote(v))
+	}
+	return out
+}
+
 // buildPlan 把归一化产物算成一份要落库的行。
 //
 // **算清楚再落**：每行都带着解析出来的外键 id，落库时不再解析一遍。
@@ -280,17 +298,13 @@ func humanJudged(db *store.DB, supplierID int64, externalID string, productIDs [
 	for _, pid := range productIDs {
 		parts = append(parts, store.Quote(pid))
 	}
-	writers := make([]string, 0, len(machineWriters))
-	for _, w := range machineWriters {
-		writers = append(writers, store.Quote(w))
-	}
 
 	sql := "SELECT m.product_id FROM product_mapping m " +
 		"JOIN supplier_product sp ON sp.id = m.supplier_product_id " +
 		"WHERE sp.supplier_id = " + store.Quote(supplierID) +
 		" AND sp.external_id = " + store.Quote(externalID) +
 		" AND (m.match_type = 'manual' OR (m.created_by IS NOT NULL AND m.created_by NOT IN (" +
-		strings.Join(writers, ", ") + ")))" +
+		strings.Join(machineWriterLits, ", ") + ")))" +
 		" AND m.product_id IN (" + strings.Join(parts, ", ") + ");"
 
 	rows, err := db.Rows(sql)

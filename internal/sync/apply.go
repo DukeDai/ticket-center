@@ -174,7 +174,20 @@ func productStatement(plan Plan, p ProductRows) (string, error) {
 		pmSQL = pmSQL.EndList()
 		pmSQL = pmSQL.Text(" FROM sp")
 		pmSQL = pmSQL.Text(" ON CONFLICT (supplier_product_id, product_id) DO UPDATE SET ")
-		pmSQL = pmSQL.Text("match_evidence = EXCLUDED.match_evidence, ")
+		// 判定依据只在**机器写的行**上更新 —— 人工行的人工依据不许被洗掉。
+		//
+		// 为什么：match_evidence 是「判定依据 JSON」，用处就是让匹配可解释、可人工复核
+		// （docs/schema-design.md §3.1）。人工写下 {"signals":[...],"decided_by":"ops@demo"}
+		// 之后被换成 {"decoded_by":"sync"}，丢的是两样东西：
+		// 人工为什么这么判的（依据没了），以及这一行是谁写的
+		// （开始说「机器写的」，而机器写的行恰恰是待审核的那类）。
+		//
+		// 所以「谁写的」这一栏，机器只许写机器自己的那一份。
+		// 人工行的判定依据原样留着。
+		pmSQL = pmSQL.Text("match_evidence = CASE WHEN product_mapping.match_type = 'manual' " +
+			"OR (product_mapping.created_by IS NOT NULL AND product_mapping.created_by NOT IN (" +
+			strings.Join(machineWriterLits, ", ") + ")) " +
+			"THEN product_mapping.match_evidence ELSE EXCLUDED.match_evidence END, ")
 		pmSQL = pmSQL.Text("status = CASE WHEN product_mapping.status = 'active' THEN 'active' ELSE EXCLUDED.status END")
 
 		stmt, err := pmSQL.String()

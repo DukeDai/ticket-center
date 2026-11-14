@@ -267,6 +267,58 @@ func TestApplyDoesNotDegradeActiveRows(t *testing.T) {
 	}
 }
 
+// TestApplyKeepsHumanMatchEvidence 人工判过的映射，判定依据不许被机器覆盖。
+//
+// 上一条只守住了 status：映射没被降级，但**判定依据被洗掉了**。
+// match_evidence 是「判定依据 JSON」（docs/schema-design.md §3.1）——
+// 它的用处就是让自动匹配可解释、可人工复核。人工写下的依据
+// （{"signals":[...],"decided_by":"ops@demo"}）被同步作业换成
+// {"decoded_by":"sync"} 之后：
+//   - 人工为什么这么判的，**没了**；
+//   - 这一行开始说「是机器写的」，而机器写的行恰恰是待审核的那类。
+//
+// 所以人工行的判定依据不许被覆盖 —— 同步作业只往「更严」的方向走，
+// 洗掉人的判断依据是往「更松」的方向走（把人工的判断抹成机器的）。
+func TestApplyKeepsHumanMatchEvidence(t *testing.T) {
+	db := testDB(t)
+	sid := supplierIDOf(t, db, "trip_com")
+
+	plan, err := buildPlan(db, sid, "trip_com", sampleCatalog(adultCoverage()))
+	if err != nil {
+		t.Fatalf("算计划失败：%v", err)
+	}
+	if err := apply(db, plan); err != nil {
+		t.Fatalf("落库失败：%v", err)
+	}
+
+	// 人判过这一对：写上人工的判定依据。
+	const humanEvidence = `{"signals": ["title_exact", "same_venue"], "decided_by": "ops@demo"}`
+	if err := db.Exec("UPDATE product_mapping SET status='active', match_type='manual', " +
+		"created_by='ops@demo', match_evidence='" + humanEvidence + "'::jsonb " +
+		"WHERE supplier_product_id = " +
+		"(SELECT id FROM supplier_product WHERE supplier_id=7 AND external_id='21081935');"); err != nil {
+		t.Fatalf("改人工映射失败：%v", err)
+	}
+
+	// 再同步一次。
+	plan2, err := buildPlan(db, sid, "trip_com", sampleCatalog(adultCoverage()))
+	if err != nil {
+		t.Fatalf("重算计划失败：%v", err)
+	}
+	if err := apply(db, plan2); err != nil {
+		t.Fatalf("重放落库失败：%v", err)
+	}
+
+	evidence, err := db.Scalar("SELECT match_evidence::text FROM product_mapping WHERE supplier_product_id = " +
+		"(SELECT id FROM supplier_product WHERE supplier_id=7 AND external_id='21081935') LIMIT 1;")
+	if err != nil {
+		t.Fatalf("读判定依据失败：%v", err)
+	}
+	if evidence != humanEvidence {
+		t.Errorf("人工的判定依据被同步作业覆盖了：\n  改前 %s\n  改后 %s", humanEvidence, evidence)
+	}
+}
+
 // TestSourceVariantValidDaysNullMeansNoConstraint 源侧没报兑现窗口 = 没有约束。
 //
 // 绝不能折成 0（硬约束 22、34 同一条口径）。
