@@ -199,10 +199,16 @@ def build_canonical(catalog):
                     aid, pid, lit(ax['code']), lit(ax['name']), ax.get('sort_order', 10)))
             for opt in ax.get('options', []):
                 oid = ids['option']; ids['option'] += 1
+                # valid_days 是我们承诺给客户的天数（规范侧的承诺）。
+                # 选项没写 = 这条轴不描述有效期（园区范围、加购件就是这样）→ NULL，
+                # 不是 0。NULL 由 fn_variant_validity_days 兜成 1，
+                # 0 会被 CHECK（valid_days > 0）挡在库外。
                 stmts.append(
-                    "INSERT INTO product_axis_option (id, axis_id, option_code, option_name, option_attrs, sort_order, status) "
-                    "VALUES (%d, %d, %s, %s, '{}'::jsonb, %d, 'active');" % (
-                        oid, aid, lit(opt['code']), lit(opt['name']), opt.get('sort_order', 10)))
+                    "INSERT INTO product_axis_option (id, axis_id, option_code, option_name, option_attrs, valid_days, sort_order, status) "
+                    "VALUES (%d, %d, %s, %s, '{}'::jsonb, %s, %d, 'active');" % (
+                        oid, aid, lit(opt['code']), lit(opt['name']),
+                        lit(opt['valid_days']) if opt.get('valid_days') is not None else 'NULL',
+                        opt.get('sort_order', 10)))
                 canon.setdefault((p['product_code'], ax['code']), {})[opt['code']] = (aid, oid)
         tt_ids = {}
         for tt in p.get('ticket_types', []):
@@ -409,12 +415,17 @@ def run():
             for sv in variants:
                 sv_id += 1
                 sv_index[sv['external_id']] = sv_id
+                # valid_days 是源侧肯兑现的天数（源侧的约束）。
+                # 源侧没报 → NULL = 没给约束 = 不拦（硬约束 22、34 同一条口径）。
+                # 绝不能折成 0：0 会被 CHECK 挡掉，而「没报」不是「报了 0」。
+                src_valid_days = (sv.get('numbers') or {}).get('valid_days')
                 stmts.append(
-                    "INSERT INTO supplier_variant (id, supplier_product_id, external_variant_id, title, variant_attrs, raw_payload, status, is_price_locked) "
-                    "VALUES (%d, %d, %s, %s, %s, %s, 'active', %s);" % (
+                    "INSERT INTO supplier_variant (id, supplier_product_id, external_variant_id, title, variant_attrs, raw_payload, status, is_price_locked, valid_days) "
+                    "VALUES (%d, %d, %s, %s, %s, %s, 'active', %s, %s);" % (
                         sv_id, sp_id, lit(sv['external_id']), lit(sv['title']),
                         lit(json.dumps(sv['attrs'], ensure_ascii=False)),
-                        lit(json.dumps(sv['raw'], ensure_ascii=False)), lit(sv['price_locked'])))
+                        lit(json.dumps(sv['raw'], ensure_ascii=False)), lit(sv['price_locked']),
+                        lit(src_valid_days) if src_valid_days is not None else 'NULL'))
 
             # 变体级覆盖语义匹配与源报价：都交给数据库判
             for sv in variants:

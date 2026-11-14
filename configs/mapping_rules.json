@@ -77,6 +77,7 @@
         "name_path": "productName"
       },
       "skus": {
+        "_comment": "numbers 是源侧的数值事实通道，按事实名索引（不是按位置）：写手按名字找列。加一个新的数值事实不用改 Go 代码，只加一条规则 —— 事实的名字住在配置里，不住在代码里（硬约束 4）",
         "path": "items",
         "id_path": "skuId",
         "name_path": "itemName",
@@ -106,6 +107,9 @@
         ],
         "flags": {
           "is_price_locked": { "path": "isPrivatePrice", "equals": true }
+        },
+        "numbers": {
+          "valid_days": { "path": "validityDays" }
         }
       },
       "mapping_expression": {

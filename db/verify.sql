@@ -761,7 +761,18 @@ FROM v_variant_validity
 ORDER BY variant_code, session_date;
 
 \echo ''
-\echo '════════════════════════ L3. 配方构成（v_variant_composition） ════════════════════════'
+\echo '════════════════════════ L3. 源侧兑现窗口（v_variant_source_validity） ══════════════════'
+-- 期望：L2 看的是「我们承诺几天」（规范侧），这一节看的是「源侧肯兑现几天」（源侧）。
+--       两边对不上时 gap_reason 说清差在哪，covers_window=false。
+--       covers_window 为 NULL = 源侧没报兑现窗口 = 没给约束 = 不拦（硬约束 22、34 同一条口径），
+--       所以 NULL 不算缺口，源侧没报的那些行不该出现在缺口清单里。
+SELECT supplier_code, source_sku, source_title, variant_code, variant_key,
+       source_valid_days, promised_days, covers_window, gap_reason, source_status
+FROM v_variant_source_validity
+ORDER BY variant_key, supplier_code, source_sku;
+
+\echo ''
+\echo '════════════════════════ L4. 配方构成（v_variant_composition） ════════════════════════'
 -- 期望：每个配方成分都记着「这个源 SKU 顶的是哪个规范成分」（component_variant_id），
 --       以及源侧给的份数与我们声明的份数；两侧对账逐行比
 SELECT variant_key, variant_role, component_variant_key, component_variant_title,
@@ -771,7 +782,7 @@ FROM v_variant_composition
 ORDER BY variant_key, component_variant_key;
 
 \echo ''
-\echo '════════════════════════ L4. C 端组合构成读模型（v_c_variant_composition） ══════════════'
+\echo '════════════════════════ L5. C 端组合构成读模型（v_c_variant_composition） ══════════════'
 -- 期望：每个组合的每个成分都带着份数、人群编码与天数；
 --       「2 成人 + 1 儿童」这句话由前端按 locale 拼（硬约束 9、27）
 SELECT channel_id, variant_key, variant_code, title, sequence, component_variant_id,
@@ -780,7 +791,7 @@ FROM v_c_variant_composition
 ORDER BY channel_id, variant_key, sequence;
 
 \echo ''
-\echo '════════════════════════ L5. 配方缺口诊断（v_combo_price_gap） ══════════════════════════'
+\echo '════════════════════════ L6. 配方缺口诊断（v_combo_price_gap） ══════════════════════════'
 -- 期望：卖得掉的组合不报缺口（能供的时候不许报缺口，硬约束 30）；
 --       卖不掉的要说清卡在哪：缺价 / 不在同一场次 / 跨源 / 锁价 / 按团报价
 SELECT combo_variant_id, combo_variant_key, channel_id, date, gap,
@@ -789,7 +800,7 @@ FROM v_combo_price_gap
 ORDER BY combo_variant_key, date, component_variant_key;
 
 \echo ''
-\echo '════════════════════════ L6. 套装声明（v_variant_bundle） ══════════════════════════════'
+\echo '════════════════════════ L7. 套装声明（v_variant_bundle） ══════════════════════════════'
 -- 期望：套装声明的成分、份数与有效期；covers_window=t 表示有效期盖住了成分窗口的并集；
 --       admissions_per_set 是入场份数（不是套数）
 SELECT variant_code, variant_key, supplier_code, source_set_sku, source_set_title,
@@ -799,7 +810,7 @@ FROM v_variant_bundle
 ORDER BY variant_key;
 
 \echo ''
-\echo '════════════════════════ L7. 套装成分（v_variant_bundle_part） ════════════════════════════'
+\echo '════════════════════════ L8. 套装成分（v_variant_bundle_part） ════════════════════════════'
 -- 期望：每个套装成分都带着份数、人群编码与自己的天数
 SELECT product_variant_id, supplier_variant_id, bundle_id, part_id, component_variant_id,
        variant_code, title, quantity, audience_code, valid_days
@@ -807,7 +818,7 @@ FROM v_variant_bundle_part
 ORDER BY product_variant_id, part_id;
 
 \echo ''
-\echo '════════════════════════ L8. 明细的采纳源（v_order_item_source） ══════════════════════════'
+\echo '════════════════════════ L9. 明细的采纳源（v_order_item_source） ══════════════════════════'
 -- 期望：履约真正用的源在 sales_order_item_source 这一行上（不是明细上的那个字段）；
 --       普通明细也写一行（履约代码只有一条路），组合与套装的成分各占一行
 SELECT order_item_id, order_no, order_status, product_id, variant_key, variant_role,
@@ -818,14 +829,14 @@ FROM v_order_item_source
 ORDER BY order_item_id, component_variant_key;
 
 \echo ''
-\echo '════════════════════════ L9. 到期却还停在 issued 的凭证（v_voucher_expiry_overdue） ═════'
+\echo '════════════════════════ L10. 到期却还停在 issued 的凭证（v_voucher_expiry_overdue） ═════'
 -- 期望：作业跑完就会是 0；不为 0 说明凭证过期作业漏跑了。
 --       这是运行状态，不是数据违规 —— 它不挡住门禁（硬约束 38「看得见但不挡门禁」）
 SELECT overdue_count, oldest_valid_to, newest_valid_to, affected_orders
 FROM v_voucher_expiry_overdue;
 
 \echo ''
-\echo '════════════════════════ L10. 每个业务视图都要被验收查询摸到 ═════════════════════════════'
+\echo '════════════════════════ L11. 每个业务视图都要被验收查询摸到 ═════════════════════════════'
 -- 为什么有这一节：一个视图的定义烂掉了，验收查询不碰它，门禁就照样绿 ——
 -- 而那个视图往往是某条硬约束的读侧（约束 23 / 24 / 26 / 38 都是）。
 -- 所以这里反过来查一遍：库里每个业务视图，都必须至少被 verify.sql 摸过一次。

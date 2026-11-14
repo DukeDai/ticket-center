@@ -65,6 +65,18 @@ type FlagRule struct {
 	Equals *bool  `json:"equals"`
 }
 
+// NumberRule 数值属性规则：把源报文里的一个数按路径取出来，落到一个**有名字的**事实槽。
+//
+// 为什么是「有名字的槽」而不是「一个整数」：源侧报的数字各有各的含义
+// （兑现几天、最少成团几人、单笔上限几份），它们要去**不同的列**。
+// 规则里写清楚这个数字叫什么，写手按名字找列 —— 名字是数据，不是代码里的分支。
+//
+// 取不到时返回 nil = 源侧没报 = 没有约束（与硬约束 34、spec/15-validity.md 第五口径
+// 同一条口径）。nil 不许被当成 0。
+type NumberRule struct {
+	Path string `json:"path"`
+}
+
 // Packages 「产品 → 套餐 → 资源」形态（形态 A）。
 type Packages struct {
 	Path      string     `json:"path"`
@@ -76,13 +88,14 @@ type Packages struct {
 
 // Resources 套餐下的资源（= 源侧可售单元）。
 type Resources struct {
-	Path         string              `json:"path"`
-	IDPath       string              `json:"id_path"`
-	NamePath     string              `json:"name_path"`
-	AudiencePath string              `json:"audience_path"`
-	AudienceMap  map[string]string   `json:"audience_map"`
-	Axes         []AxisRule          `json:"axes"`
-	Flags        map[string]FlagRule `json:"flags"`
+	Path         string                `json:"path"`
+	IDPath       string                `json:"id_path"`
+	NamePath     string                `json:"name_path"`
+	AudiencePath string                `json:"audience_path"`
+	AudienceMap  map[string]string     `json:"audience_map"`
+	Axes         []AxisRule            `json:"axes"`
+	Flags        map[string]FlagRule   `json:"flags"`
+	Numbers      map[string]NumberRule `json:"numbers"`
 }
 
 // Products 「产品 → 商品列表」形态。
@@ -94,13 +107,14 @@ type Products struct {
 
 // Skus 「文档即产品 → SKU」形态（形态 B）。
 type Skus struct {
-	Path         string              `json:"path"`
-	IDPath       string              `json:"id_path"`
-	NamePath     string              `json:"name_path"`
-	AudiencePath string              `json:"audience_path"`
-	AudienceMap  map[string]string   `json:"audience_map"`
-	Axes         []AxisRule          `json:"axes"`
-	Flags        map[string]FlagRule `json:"flags"`
+	Path         string                `json:"path"`
+	IDPath       string                `json:"id_path"`
+	NamePath     string                `json:"name_path"`
+	AudiencePath string                `json:"audience_path"`
+	AudienceMap  map[string]string     `json:"audience_map"`
+	Axes         []AxisRule            `json:"axes"`
+	Flags        map[string]FlagRule   `json:"flags"`
+	Numbers      map[string]NumberRule `json:"numbers"`
 }
 
 // Expression 组合映射表达式规则（GlobalTix 的 A|2+B|1）。
@@ -127,7 +141,16 @@ type Variant struct {
 	Coverage    Coverage       `json:"coverage"`
 	Attrs       map[string]any `json:"attrs"`
 	PriceLocked bool           `json:"price_locked"`
-	Raw         map[string]any `json:"raw"`
+	// Numbers 源侧报出来的数值事实，按**事实名**索引（"valid_days" 这样的名字）。
+	//
+	// 为什么按名字而不是按位置：源侧报的数字要去不同的列（兑现几天 / 最少成团几人 /
+	// 单笔上限几份），写手按名字找列。加一个新的数值事实不用改 Go 代码，
+	// 只加一条规则 —— 事实的名字住在配置里，不住在代码里（硬约束 4）。
+	//
+	// 缺席 = 源侧没报 = 没有约束。写手不许把缺席当成 0
+	// （硬约束 22、34：不知道就是不知道）。
+	Numbers map[string]int `json:"numbers"`
+	Raw     map[string]any `json:"raw"`
 }
 
 // PriceRow 一条源报价行。
@@ -302,6 +325,32 @@ func ResolveFlags(raw map[string]any, rules map[string]FlagRule) map[string]bool
 	return out
 }
 
+// ResolveNumbers 解析数值事实。
+//
+// 源侧没报的数字**不进结果**（不是 0）：
+// 「没报」= 源侧没给约束（硬约束 22、34 同一条口径），写手看到缺席就知道
+// 该写 NULL。把缺席折成 0 会让「源侧没报」变成「源侧说 0」——
+// 对兑现窗口来说那是假答案（0 天 = 盖不住任何承诺），对成团人数来说那是假约束。
+//
+// 源侧报了但不是数（"N/A"、null、对象）→ 当作没报，也不当 0。
+// 源侧报了 0 或负数 → 收下，交给库里的 CHECK 挡（valid_days > 0）。
+// 归一化层不替源侧做判断，它只负责把数字搬过来。
+func ResolveNumbers(raw map[string]any, rules map[string]NumberRule) map[string]int {
+	out := map[string]int{}
+	for name, rule := range rules {
+		v := Dig(raw, rule.Path)
+		if v == nil {
+			continue
+		}
+		n := toInt(v)
+		if n == nil {
+			continue
+		}
+		out[name] = *n
+	}
+	return out
+}
+
 func truthy(v any) bool {
 	switch t := v.(type) {
 	case nil:
@@ -397,6 +446,7 @@ func (r *Rules) Normalize(sourceKey string, payload []byte) (*Result, error) {
 					audience := ResolveAudience(resMap, rule.Packages.Resources.AudiencePath,
 						rule.Packages.Resources.AudienceMap)
 					flags := ResolveFlags(resMap, rule.Packages.Resources.Flags)
+					numbers := ResolveNumbers(resMap, rule.Packages.Resources.Numbers)
 					extID := toString(Dig(resMap, rule.Packages.Resources.IDPath))
 					v := Variant{
 						ExternalID:  extID,
@@ -404,6 +454,7 @@ func (r *Rules) Normalize(sourceKey string, payload []byte) (*Result, error) {
 						Coverage:    coverageOf(axes, audience),
 						Attrs:       map[string]any{"audience": audience, "axes": toAnyMap(axes)},
 						PriceLocked: flags["is_price_locked"],
+						Numbers:     numbers,
 						Raw:         resMap,
 					}
 					product.Variants = append(product.Variants, v)
@@ -420,6 +471,7 @@ func (r *Rules) Normalize(sourceKey string, payload []byte) (*Result, error) {
 				axes := ResolveAxes(skuMap, rule.Skus.Axes)
 				audience := ResolveAudience(skuMap, rule.Skus.AudiencePath, rule.Skus.AudienceMap)
 				flags := ResolveFlags(skuMap, rule.Skus.Flags)
+				numbers := ResolveNumbers(skuMap, rule.Skus.Numbers)
 				extID := toString(Dig(skuMap, rule.Skus.IDPath))
 				v := Variant{
 					ExternalID:  extID,
@@ -427,6 +479,7 @@ func (r *Rules) Normalize(sourceKey string, payload []byte) (*Result, error) {
 					Coverage:    coverageOf(axes, audience),
 					Attrs:       map[string]any{"audience": audience, "axes": toAnyMap(axes)},
 					PriceLocked: flags["is_price_locked"],
+					Numbers:     numbers,
 					Raw:         skuMap,
 				}
 				product.Variants = append(product.Variants, v)
@@ -603,6 +656,14 @@ func toInt(v any) *int {
 		return &i
 	case int:
 		return &t
+	case string:
+		// 与 toFloat 同一条口径：源侧把数字报成字符串时照样认。
+		// 认不出就返回 nil（= 没报），不当 0。
+		i, err := strconv.Atoi(strings.TrimSpace(t))
+		if err != nil {
+			return nil
+		}
+		return &i
 	}
 	return nil
 }

@@ -815,6 +815,17 @@ JOIN ticket_type_mapping ttm ON ttm.supplier_ticket_type_id = stt.id
 JOIN ticket_type tt ON tt.id = ttm.ticket_type_id
 ON CONFLICT (supplier_product_id, external_variant_id) DO NOTHING;
 
+-- 源侧兑现窗口：GlobalTix 报文里带着 validityDays（一天），这是源侧肯兑现的事实，
+-- 记下来。别的源在这批种子数据里没报过窗口 → valid_days 保持 NULL =
+-- 「没给约束」= 不拦（硬约束 22、34 同一条口径）。两者不许混：把「没报」写成 1
+-- 会凭空给每个源加一条假的约束，把「报了 1 天」写成 NULL 会把一条真约束洗掉。
+UPDATE supplier_variant sv
+   SET valid_days = 1
+  FROM supplier_product sp
+  JOIN supplier sup ON sup.id = sp.supplier_id
+ WHERE sp.id = sv.supplier_product_id
+   AND sup.code = 'globaltix';
+
 INSERT INTO supplier_variant_mapping (supplier_variant_id, product_variant_id, coverage, is_exact, match_type, confidence, status)
 SELECT sv.id, pv.id,
        jsonb_build_object('axes', jsonb_build_object('audience', jsonb_build_array(tt.code)),
@@ -945,17 +956,22 @@ INSERT INTO product_mapping (supplier_product_id, supplier_id, product_id, match
 VALUES (9,7,6,'manual',0.99,'{"signals":["title_exact","same_venue","same_city"],"decided_by":"ops@demo"}',true,'active','ops@demo'),
        (10,6,6,'manual',0.97,'{"signals":["title_exact","same_venue","same_city"],"decided_by":"ops@demo"}',false,'active','ops@demo');
 
-INSERT INTO supplier_variant (id, supplier_product_id, external_variant_id, title, variant_attrs, status) OVERRIDING SYSTEM VALUE
-VALUES (15,9,'900001','1日票 成人（工作室之旅）','{"audience":"adult","passType":"1d","parks":["studio_tour"]}','active'),
-       (16,9,'900002','1日票 儿童（工作室之旅）','{"audience":"child","passType":"1d","parks":["studio_tour"]}','active'),
-       (17,9,'900004','1日票 老年（工作室之旅）','{"audience":"senior","passType":"1d","parks":["studio_tour"]}','active'),
-       (18,9,'900003','1日票 成人 园区通票（工作室之旅+超级任天堂世界）','{"audience":"adult","passType":"1d","parks":["studio_tour","snw"]}','active'),
-       (19,9,'900005','双日票 成人（工作室之旅）','{"audience":"adult","passType":"2d","parks":["studio_tour"]}','active'),
-       (20,9,'900006','快速通行证（不限次）','{"addon":"express"}','active'),
-       (21,10,'ZWO-1D-BASE','一日票 · 单园区（工作室之旅）','{"audience":["adult","child","senior"],"passType":["1d"],"parks":["studio_tour"]}','active'),
-       (22,10,'ZWO-1D-PARK','一日票 · 园区通票（工作室之旅+超级任天堂世界）','{"audience":["adult","child"],"passType":["1d"],"parks":["studio_tour","snw"]}','active'),
-       (23,10,'ZWO-2D-BASE','双日票 · 单园区（工作室之旅）','{"audience":["adult","child"],"passType":["2d"],"parks":["studio_tour"]}','active'),
-       (24,10,'ZWO-EXPRESS','快速通行证（不限次）','{"addon":"express"}','active');
+-- valid_days 是源侧肯兑现的天数（源侧的约束，不是我们的承诺）。
+-- 没报 = NULL = 源侧没给约束 = 不拦（硬约束 22、34 同一条口径）。
+-- 这里刻意给 900005 报 1 天：它覆盖的是规范侧的双日变体（承诺 2 天），
+-- 兑现窗口短于承诺 —— 选源时它必须输掉 route_rank = 1 并退出该变体的候选集。
+-- 没有这一行，兑现窗口的判据在种子数据上就是空转的（绿得没有意义）。
+INSERT INTO supplier_variant (id, supplier_product_id, external_variant_id, title, variant_attrs, status, valid_days) OVERRIDING SYSTEM VALUE
+VALUES (15,9,'900001','1日票 成人（工作室之旅）','{"audience":"adult","passType":"1d","parks":["studio_tour"]}','active',1),
+       (16,9,'900002','1日票 儿童（工作室之旅）','{"audience":"child","passType":"1d","parks":["studio_tour"]}','active',1),
+       (17,9,'900004','1日票 老年（工作室之旅）','{"audience":"senior","passType":"1d","parks":["studio_tour"]}','active',1),
+       (18,9,'900003','1日票 成人 园区通票（工作室之旅+超级任天堂世界）','{"audience":"adult","passType":"1d","parks":["studio_tour","snw"]}','active',1),
+       (19,9,'900005','双日票 成人（工作室之旅）','{"audience":"adult","passType":"2d","parks":["studio_tour"]}','active',1),
+       (20,9,'900006','快速通行证（不限次）','{"addon":"express"}','active',NULL),
+       (21,10,'ZWO-1D-BASE','一日票 · 单园区（工作室之旅）','{"audience":["adult","child","senior"],"passType":["1d"],"parks":["studio_tour"]}','active',1),
+       (22,10,'ZWO-1D-PARK','一日票 · 园区通票（工作室之旅+超级任天堂世界）','{"audience":["adult","child"],"passType":["1d"],"parks":["studio_tour","snw"]}','active',1),
+       (23,10,'ZWO-2D-BASE','双日票 · 单园区（工作室之旅）','{"audience":["adult","child"],"passType":["2d"],"parks":["studio_tour"]}','active',2),
+       (24,10,'ZWO-EXPRESS','快速通行证（不限次）','{"addon":"express"}','active',NULL);
 
 -- 覆盖语义映射：Trip.com 精确命中；自由行一个源变体宽覆盖多个规范变体
 INSERT INTO supplier_variant_mapping (supplier_variant_id, product_variant_id, coverage, is_exact, match_type, confidence, status)
@@ -1194,8 +1210,8 @@ VALUES (11,7,'TC-BJ-TOUR-001','TC-TOUR-001','https://sopenservice.ctrip.com/open
 INSERT INTO product_mapping (supplier_product_id, supplier_id, product_id, match_type, confidence, match_evidence, is_primary, status, created_by)
 VALUES (11,7,7,'manual',0.95,'{"signals":["title_exact","same_city","category:一日游"],"decided_by":"ops@demo"}',true,'active','ops@demo');
 
-INSERT INTO supplier_variant (id, supplier_product_id, external_variant_id, title, variant_attrs, status) OVERRIDING SYSTEM VALUE
-VALUES (25,11,'900101','标准票（不区分人群）','{"audience":"standard","passType":"1d","pricing":"per_group"}','active');
+INSERT INTO supplier_variant (id, supplier_product_id, external_variant_id, title, variant_attrs, status, valid_days) OVERRIDING SYSTEM VALUE
+VALUES (25,11,'900101','标准票（不区分人群）','{"audience":"standard","passType":"1d","pricing":"per_group"}','active',1);
 
 INSERT INTO supplier_variant_mapping (supplier_variant_id, product_variant_id, coverage, is_exact, match_type, confidence, status)
 VALUES (25,17,'{"axes":{"audience":["standard"],"pass_type":["1d"]},"excludes":[]}',true,'manual',1.000,'active');
@@ -2078,10 +2094,12 @@ SELECT sp.id, 'FAMILY-SET', '家庭套票（整套）', 'Family Set (2 Adult + 1
  WHERE sp.external_id = 'ZWO-USJ-2002';
 
 -- 源变体：整套这个 SKU。
-INSERT INTO supplier_variant (supplier_product_id, external_variant_id, title, variant_attrs, status)
+-- valid_days = 1：源侧整套只管一天（成分窗口的并集也是 1 天），
+-- 与下面套装声明的 valid_days 一致 —— 两处说的是同一件事。
+INSERT INTO supplier_variant (supplier_product_id, external_variant_id, title, variant_attrs, status, valid_days)
 SELECT sp.id, 'ZWO-FAMILY-SET', '家庭套票（2 成人 + 1 儿童）',
        '{"audience":["adult","child"],"passType":["1d"],"parks":["studio_tour"],"package":"family:2adult:1child"}',
-       'active'
+       'active', 1
   FROM supplier_product sp
  WHERE sp.external_id = 'ZWO-USJ-2002';
 
