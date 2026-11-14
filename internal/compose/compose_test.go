@@ -15,7 +15,19 @@ import (
 //   - 每一段配到规范侧声明的一个组件上，配不出来就报错，不猜；
 //   - 数量必须一致：源侧要 2 份，规范侧就得声明 2 份；
 //   - 组合的成分必须来自同一个源；
-//   - 落库后不变量 78-80 全绿。
+//   - 落库后组合映射侧的不变量全绿。
+
+// compositionInvariantNames 是组合映射侧那几条不变量的 check_name。
+//
+// 按 check_name 定位，不按 seq：seq 会随着加条重新编号，
+// 按序号定位的那天，重排一次就静悄悄指到别的门禁上去了。
+// 这几条是组合映射的写侧门禁（配方落到 supplier_variant_composition 上以后要成立）。
+var compositionInvariantNames = []string{
+	"组合映射的成分必须来自同一个源",
+	"组合映射的每个成分必须覆盖声明的规范组件",
+	"组合映射的规范组件声明必须与源侧成分逐项对得上",
+	"组合变体不得直接挂源映射（供给走配方）",
+}
 
 func seeded(t *testing.T) *store.DB {
 	t.Helper()
@@ -201,8 +213,17 @@ func TestApplyWritesRecipeAndKeepsInvariantsGreen(t *testing.T) {
 		t.Fatalf("重复写之后配方该还是两行，实际 %s 行", n)
 	}
 
-	// 不变量 78-80 必须全绿。
-	bad, err := db.Scalar(`SELECT count(*) FROM v_invariant_checks WHERE seq >= 78 AND actual > 0;`)
+	// 组合映射侧的不变量必须全绿。
+	//
+	// 按 check_name 找，不按 seq 找：seq 会随着加条重新编号，
+	// 按序号定位的那天，重排一次就静悄悄指到别的门禁上去了。
+	quoted := make([]string, 0, len(compositionInvariantNames))
+	for _, n := range compositionInvariantNames {
+		quoted = append(quoted, store.Quote(n))
+	}
+	bad, err := db.Scalar(`SELECT count(*) FROM v_invariant_checks
+	                       WHERE check_name IN (` +
+		strings.Join(quoted, ", ") + `) AND actual > 0;`)
 	if err != nil {
 		t.Fatalf("查不变量失败：%v", err)
 	}

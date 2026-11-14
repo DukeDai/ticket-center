@@ -170,7 +170,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 不变量 44 把币种守住（售价行的币种必须等于该行的结算币种）；
 不变量 45 把汇率留痕守住（留痕日期能独立复算出同一个折算因子）。
 
-**口径细节**（完整规则见 [`spec/09-pricing.md` §4.6](../spec/09-pricing.md)）：
+**口径细节**（完整规则见 `SPEC.md` §4.6）：
 
 | 环节 | 口径 |
 |---|---|
@@ -237,7 +237,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 ### 4.17 营销域（3）
 `cart` · `cart_item` · `coupon_redemption`
 
-### 4.18 视图（61）
+### 4.18 视图（条数跑 `make counts`）
 
 | 视图 | 回答什么问题 |
 |---|---|
@@ -252,19 +252,18 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_order_fulfillment_gap` | 哪些订单「付了钱没出票」？ |
 | `v_settlement_gap` | 哪些已确认预订没进结算单？ |
 | `v_supplier_sync_health` | 哪个源在掉链子？ |
-| `v_invariant_checks` | 全部业务不变量有没有被破坏？（各主题视图的并集；分组与条数见 [`SPEC.md`](../SPEC.md) §4，条数跑 `make counts`） |
-| `v_invariant_checks_core` | 供给/定价/展示侧 45 条有没有被破坏？ |
+| `v_invariant_checks` | 全部业务不变量有没有被破坏？（各主题视图的并集；分组与条数见 SPEC.md §4，条数跑 `make counts`） |
+| `v_invariant_checks_core_flat` | 供给/定价/展示侧 45 条有没有被破坏？ |
 | `v_invariant_checks_tx` | 交易侧 8 条有没有被破坏？（状态可达性与订单/预订/凭证一致性） |
 | `v_invariant_checks_order` | 下单侧 1 条有没有被破坏？（明细单价必须等于定价函数输出） |
-| `v_invariant_checks_fulfill` | 履约侧 6 条有没有被破坏？（支付、预订、出券与订单履约状态一致性） |
+| `v_invariant_checks_fulfill_flat` | 履约侧 6 条有没有被破坏？（支付、预订、出券与订单履约状态一致性） |
 | `v_invariant_checks_refund` | 退款侧 4 条有没有被破坏？（退款金额、已退款订单的事实与状态一致性） |
 | `v_invariant_checks_redemption` | 核销侧 4 条有没有被破坏？（已核销必有成功记录、一张券最多成功一次、额度用尽且账对得上、核销在有效期内） |
-| `v_invariant_checks_inventory` | 库存预占侧 4 条有没有被破坏？（每条明细有预占、量对得上、可售数没被扣两遍） |
-| `v_invariant_checks_validity` | 有效期侧 3 条有没有被破坏？（口径不歧义、券不短于承诺、卖出去的源覆盖得住） |
+| `v_invariant_checks_inventory_flat` | 库存预占侧 4 条有没有被破坏？（每条明细有预占、量对得上、可售数没被扣两遍） |
+| `v_invariant_checks_validity_flat` | 有效期侧 3 条有没有被破坏？（口径不歧义、券不短于承诺、卖出去的源覆盖得住） |
 | `v_invariant_checks_readmodel` | 读模型侧 6 条有没有被破坏？（读模型不与主数据分叉、日历有效期终点不被算错、组合的有效期 = 成分窗口的并集、组合构成不与主数据分叉、组合的格子带价格） |
 | `v_invariant_checks_composition` | 组合映射侧 4 条有没有被破坏？（成分同源、成分覆盖得住、两侧数量一致、组合不许直接挂源映射） |
-| `v_invariant_checks_combo` | 组合售卖侧 7 条有没有被破坏？（成分属于本明细的商品、明细成本 = Σ 成分单价 × 数量、出票张数 = 配方数量 × 份数、成分同源且与明细一致、成分票额够用、同一源 SKU 只订一次、预订与成分双向对齐） |
-| `v_invariant_checks_supply` | 供给/定价/展示侧不变量视图的**供给侧**子集（当前与 `v_invariant_checks_core` 同集，45 条） |
+| `v_invariant_checks_combo_flat` | 组合售卖侧 7 条有没有被破坏？（成分属于本明细的商品、明细成本 = Σ 成分单价 × 数量、出票张数 = 配方数量 × 份数、成分同源且与明细一致、成分票额够用、同一源 SKU 只订一次、预订与成分双向对齐） |
 | `v_c_listing_feed` | C 端列表页直出（一行一卡片，无额外 join） |
 | `v_c_product_detail` | C 端详情页内容一次聚合 |
 | `v_c_checkout_requirements` | 结算页动态表单规格 |
@@ -287,21 +286,10 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_invariant_checks_supply_source_count_023` | 可履约源数侧 1 条有没有被破坏？（日历的可履约源数必须等于供给口径算出来的源数） |
 | `v_reassign_candidates` | 哪些明细跟当前的世界对不上了、该改派？（源变了 / 价变了 / 成本变了 / 当天没有可用报价） |
 | `v_invariant_checks_reassign` | 改派侧 4 条有没有被破坏？（留痕的最后一跳等于明细当前值 / 留痕的链自洽 / 已收款不许改派 / 成分行与明细同源） |
-| `v_invariant_checks_order_004` | 下单侧不变量旧版留底（024 修订了 54：改派过的行由改派留痕解释） |
 | `v_invariant_checks_qty_limits` | 份数区间侧 3 条有没有被破坏？（留痕的份数落在留痕的区间内 / 区间留痕指向明细的采纳源 / 改派过的明细记着当前采纳源的区间） |
 | `v_invariant_checks_reassign_basis` | 按团单位价口径侧 3 条有没有被破坏？（按团明细的单位价 = 团总价分摊到人 / 单位成本 = 团成本分摊到人 / 待改派清单说「成本变了」的按团明细按人均口径算也真的变了） |
 | `v_invariant_checks_hold_ttl` | 预占到期时间侧 1 条有没有被破坏？（落库的预占必须有确定的到期时间 —— NULL 的预占永远不过期，是个不会释放的库存占用） |
-| `v_invariant_checks_core_017` | 供给侧 45 条里 34 与 43 按套装口径修订后的那一版 |
-| `v_invariant_checks_inventory_017` | 库存预占侧 4 条里 69 与 72 按套装口径修订后的那一版 |
-| `v_invariant_checks_validity_017` | 有效期侧 3 条里 75 按套装口径修订后的那一版 |
-| `v_invariant_checks_combo_017` | 组合售卖侧 7 条里 84 按套装口径修订后的那一版 |
 | `v_invariant_checks_hardening` | 收紧口径侧 2 条有没有被破坏？（退款必须先放行 / 票码不许是连号派生的） |
-| `v_invariant_checks_core_base` | 核心不变量留底（001 的口径；015 修订了 16 与 34 —— 组合的追溯路径是配方） |
-| `v_invariant_checks_combo_base` | 组合交易侧不变量留底（013 的口径；014 在此基础上加了 87 / 88） |
-| `v_invariant_checks_fulfill_base` | 履约侧不变量留底（013 修订了 58 / 60：组合按成分行算） |
-| `v_invariant_checks_inventory_base` | 库存侧不变量留底（013 修订了 69 / 72：组合按成分行算） |
-| `v_invariant_checks_validity_base` | 有效期与覆盖侧不变量留底（013 修订了 75：组合按成分行判覆盖） |
-| `v_invariant_checks_variant` | 变体侧 45 条业务不变量自检（012 修订了 29：组合变体豁免） |
 
 ### 4.12 C 端域（20，见 `docs/c-end-model.md`）
 
@@ -636,7 +624,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 
 ### 10.3 迁移里放了什么
 
-目前有十九个文件：
+文件数见 `make counts`（下面这张表每个迁移一行）：
 
 | 文件 | 内容 | 为什么它是迁移而不是种子 |
 |---|---|---|
@@ -669,6 +657,8 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 | `027_hold_ttl_default.sql` | `fn_hold_inventory()` 整体替换一次（函数开头把 `p_ttl_seconds` 归一：`COALESCE(p_ttl_seconds, 900)`；哈希与 `expires_at` 都用归一后的值）+ `v_invariant_checks_hold_ttl` + `v_invariant_checks` 重建（不变量 119 新增） | `tc-connect hold create` 不带 `--ttl`（README 自己给的示例命令）**跑不通**：`null value in column "request_hash" ... violates not-null constraint`。根因是 PostgreSQL 的 `DEFAULT` 只在**省略实参**时生效，显式传 `NULL` 拿到的是 `NULL` —— Go 侧把「没指定」编码成 `NULL`，`NULL` 顺着哈希链把 `idempotency_record.request_hash` 撑成 `NULL`。取舍写在这里：**默认值住在库里，不住在调用方**（任何调用方省略 TTL 或传 `NULL`，拿到的都是同一个 900；默认值写在调用方 = 每多一个调用方就多一份默认值，三处总有一处忘了改）；**`DEFAULT` 不是归一**（凡是「参数可以不给」的函数，归一都得在函数体里显式写）；**幂等口径不变**，但不指定与指定 900 现在落同一张预占（同一个 hash），同键异内容仍当场报错 |
 | `028_voucher_expiry.sql` | `fn_expire_vouchers()` 新增（凭证过期作业：把 `valid_to` 已过的 `issued` 券推进到 `expired`，幂等、限批 `p_limit` 默认 500、按 `valid_to, id` 排序）+ `fn_delivered_voucher_statuses()` 新增（`issued` / `used` / `expired` = 交付过，唯一读法）+ `fn_apply_order_fulfillment()` / `fn_reassign_order_item()` / `fn_issue_voucher()` 各整体替换一次（「交付过」的判定改走共享谓词）+ `v_voucher_expiry_overdue` 视图（作业漏跑看得见，但不挡门禁）+ `v_invariant_checks_voucher_expiry` + `v_invariant_checks` 重建（不变量 120-121 新增） | 核销路径刻意只落核销记录、不改券状态（「过期只落核销记录，不改券状态 —— 券状态由过期作业统一改」），兑现它的那一半一直缺着：券的有效期过了，券的状态还停在 `issued`，两个地方说的不是同一件事。更要命的是**「交付过」的口径漏了 `expired`** —— 库里到处用 `status IN ('issued','used')` 表示「这张票给过客户」，而 `expired` 同样表示交付过；不改的话，券一过期，订单的履约状态会翻成未履约、已出票的明细会变成可改派（一次交付两次出票）。取舍写在这里：**交付过 = `issued` / `used` / `expired`**（`void` / `refunded` 才是「没交付」或「收回」），一个共享谓词读，不在五处各写一遍 IN 列表；**判据是券自己的 `valid_to`**（不是订单日期、不是可售单元的承诺）；**只动 `issued`**（`used` / `void` / `refunded` 是另外几条事实）；**作业只 UPDATE 不自己插事件**（`trg_voucher_status_event` 自动落 `VoucherExpired`）；**作业漏跑看得见但不挡门禁**（「到期却还是 issued」是运行状态不是数据违规）；**作业不碰订单状态**（`fulfillment_status` 是推导值） |
 
+| `029_flatten_invariant_views.sql` | 五个压平视图 `v_invariant_checks_core_flat` / `inventory_flat` / `validity_flat` / `combo_flat` / `fulfill_flat` 新增（每条链的最终层就地改写成自包含视图，链上的基线内容内联进去）+ `v_invariant_checks` 改指向这五个（其余 17 段原样不动）+ 17 个被取代的中间层视图删除（`*_base` / 中间层 / `*_017` / `v_invariant_checks_supply` / `v_invariant_checks_variant` / `v_invariant_checks_order_004`） | 门禁 `v_invariant_checks` 是一条 UNION ALL，每段由一个迁移拼上去；改口径时**旧的那段没被删**，只是没人再往并集里 UNION 它，于是链变成 `supply -> variant -> core_base -> core -> core_017` 这样的五层。于是库里躺着 17 个「看起来在守门禁、其实只是链路中间层」的视图：读的人得顺着五层依赖才能看清一条门禁到底在算什么，改一条口径要在五层里找它在哪层被改写。取舍写在这里：**能删是因为门禁的身份是 `check_name` 不是视图对象** —— 压平视图逐行复刻最终层的结果，`v_invariant_checks` 换过去后行数、check_name、expected、actual 逐行一致（实测 121 行 / 121 个 check_name / 0 条 `actual > 0`，改动前后的快照 `EXCEPT ALL` 双向为空）；**这次只重排对象，不改门禁口径**（一条不变量都没加、没删、没改）；**删的顺序是「先上层后下层」**，不用 CASCADE（依赖还在就报错，不静默连坐）。压平时的**列序**这一步出过事故，值得写下来：每层的基线读法有两种形状 —— 3 列（`seq, check_name, actual`）或 4 列（`seq, check_name, expected, actual`），压平后的 CTE 声明四列，基线读法必须按**规范列序**投影（源视图是 3 列时写 `seq, check_name, 0, actual`）；照着源视图的位置顺序写（`seq, check_name, actual, 0`）会把 `actual` 顶进 `expected` 槽、把 `actual` 写成 0 —— **继承来的违规被静默吃掉**。这类错在「所有 actual 都是 0」的干净库里查不出来（0 和 0 相等），只有真的造一条违规、门禁必须报红时才暴露，所以回归测试必须造违规而不是只看干净库全绿 |
+
 `fn_refresh_read_models()` 的口径必须与 `v_c_readmodel_drift` 一致，
 否则刷新完自己被判成漂移 —— 这条约束由 `internal/readmodel` 的测试守着
 （改完刷新函数，测试会告诉你漂移检测和刷新口径是不是还对得上）。
@@ -682,7 +672,7 @@ tc-connect migrate --db ticket_center --baseline 001   # 接管存量库
 
 ## 11. 交易侧状态机：规则住在库里
 
-状态机以前只活在 [`spec/00-overview.md`](../spec/00-overview.md) 的图里。库里没有任何东西拦着「订单从 paid 直接跳 fulfilled」，
+状态机以前只活在 `SPEC.md` 的图里。库里没有任何东西拦着「订单从 paid 直接跳 fulfilled」，
 所以这件事必须由机制保证。
 
 ### 11.1 一张表装下合法流转
@@ -716,7 +706,7 @@ HINT:  合法流转见 state_transition 表与 SPEC.md §5；不允许跳过中�
 
 - **谁都绕不过去。** Go、psql、脚本、手工改库走同一条路；放应用层只挡得住走应用层的写入。
 - **状态与事件不分家。** 事件是状态变化的副产品，不是调用方的额外责任。
-- **改状态机不用发版。** 加一条合法流转 = 往 `state_transition` 插一行 + 同步 [`spec/00-overview.md`](../spec/00-overview.md) §5。
+- **改状态机不用发版。** 加一条合法流转 = 往 `state_transition` 插一行 + 同步 `SPEC.md` §5。
 
 代价是这张表得有人维护。所以它同时是不变量 46-49 的对象：
 「状态必须能从初始状态走到」保证表里的边自洽（不会有一条孤立的边让人永远走不到）。
@@ -737,6 +727,11 @@ CREATE VIEW v_invariant_checks AS
 ```
 
 改名而不抄一遍，是为了让「新增一条不变量」的成本等于「新增一个视图里的一个 UNION 项」。
+
+> 上面写的是当时的做法。后来这条链被压平了（`db/migrations/029_flatten_invariant_views.sql`）：
+> 每条链的最终层压成一个自包含视图（`*_flat`），链上的中间层（`*_base` / 中间层 / `*_017`）
+> 全部删掉。压平后库里不再有 `v_invariant_checks_core`，只有 `v_invariant_checks_core_flat`。
+> 门禁的身份是 `check_name`，不是视图对象，所以压平不改门禁条数与口径。
 
 ## 12. 下单写路径：写规则住在库里
 
