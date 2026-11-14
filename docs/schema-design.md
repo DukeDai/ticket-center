@@ -2,8 +2,8 @@
 
 > 物理模型：`db/migrations/`（PostgreSQL 15+；基线 `001_baseline.sql` + 后续迁移文件）
 > 建库：`tc-connect migrate --db <库>`（迁移引擎：账本 + 内容校验和 + 幂等 + 并发互斥）
-> 验收：`db/verify.sql`（不变量断言 + 46 组业务视图；条数跑 `make counts`）
-> 结论先行：**选 PostgreSQL + jsonb 混合模型**。77 张业务表（+1 张迁移账本）/ 61 张视图 / 227 个索引 / 39 个触发器 / 99 个 CHECK 约束 / 67 个序列 / 129 个函数（条数跑 `make counts`，以库里的实际口径为准）。
+> 验收：`db/verify.sql`（不变量断言 + 业务视图查询；条数跑 `make counts`）
+> 结论先行：**选 PostgreSQL + jsonb 混合模型**。业务表 / 视图 / 索引 / 触发器 / CHECK 约束 / 序列 / 函数的条数**全部跑 `make counts`**（硬约束 37：数只数一次，文档只引用，不手抄）。
 
 ---
 
@@ -237,7 +237,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 ### 4.17 营销域（3）
 `cart` · `cart_item` · `coupon_redemption`
 
-### 4.18 视图（61）
+### 4.18 视图（条数跑 `make counts`）
 
 | 视图 | 回答什么问题 |
 |---|---|
@@ -262,7 +262,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_invariant_checks_redemption` | 核销侧 4 条有没有被破坏？（已核销必有成功记录、一张券最多成功一次、额度用尽且账对得上、核销在有效期内） |
 | `v_invariant_checks_inventory_flat` | 库存预占侧 4 条有没有被破坏？（每条明细有预占、量对得上、可售数没被扣两遍） |
 | `v_invariant_checks_validity_flat` | 有效期侧 3 条有没有被破坏？（口径不歧义、券不短于承诺、卖出去的源覆盖得住） |
-| `v_invariant_checks_source_validity` | 源侧兑现窗口侧 1 条有没有被破坏？（卖出去的订单用的源，兑现的有效期窗口不得短于规范侧承诺） |
+| `v_invariant_checks_source_validity` | 源侧兑现窗口侧 2 条有没有被破坏？（卖出去的订单用的源，兑现的有效期窗口不得短于规范侧承诺；候选集里的源也得兑现得起） |
 | `v_invariant_checks_readmodel` | 读模型侧 6 条有没有被破坏？（读模型不与主数据分叉、日历有效期终点不被算错、组合的有效期 = 成分窗口的并集、组合构成不与主数据分叉、组合的格子带价格） |
 | `v_invariant_checks_composition` | 组合映射侧 4 条有没有被破坏？（成分同源、成分覆盖得住、两侧数量一致、组合不许直接挂源映射） |
 | `v_invariant_checks_combo_flat` | 组合售卖侧 7 条有没有被破坏？（成分属于本明细的商品、明细成本 = Σ 成分单价 × 数量、出票张数 = 配方数量 × 份数、成分同源且与明细一致、成分票额够用、同一源 SKU 只订一次、预订与成分双向对齐） |
@@ -543,7 +543,7 @@ CONSTRAINT coupon_usage_ck       CHECK (used_count >= 0 AND (usage_limit IS NULL
 
 ## 8. 索引与触发器清单（实测）
 
-- 表 77（+1 张迁移账本 `ops.schema_migration`）/ 视图 63 / 索引 227 / 触发器 39 / CHECK 约束 99 / 序列 67 / 函数 131（条数跑 `make counts`）
+- 表 / 视图 / 索引 / 触发器 / CHECK 约束 / 序列 / 函数的条数**全部跑 `make counts`**（硬约束 37：这些数是数出来的，手抄就有两处；抄的那天是对的，加了一天条目的那天就有一处是旧的）
 - `updated_at` 由统一触发器 `fn_set_updated_at()` 维护，避免应用层漏更新
 - 交易侧状态机由 12 个触发器守着（4 张表 × 守卫 + 事件）：非法流转当场报错，状态一变就落一条领域事件
 - 订单关上（`cancelled` / `expired` / `refunded`）时由 `trg_release_holds_on_order_close` 把它的库存预占置为 `voided`：承诺要放掉，但「卖出过」这个事实不许被改写

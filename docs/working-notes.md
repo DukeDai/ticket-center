@@ -49,7 +49,7 @@ db/migrations/026_*.sql        按团报价的单位价口径（fn_unit_amount�
 db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory 归一 NULL → 900 秒）—— 默认值住在库里，不住在调用方
 db/migrations/028_*.sql        凭证过期作业（fn_expire_vouchers）—— 券过期了由作业统一改，「交付过」口径补上 expired
 db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）
-db/verify.sql                 验收查询（46 组视图查询 + 不变量断言，条数见 make counts）
+db/verify.sql                 验收查询（业务视图查询 + 不变量断言，条数见 make counts）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / jobs / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
 cmd/tc-api/                  C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历；只读读模型，只服务在营的自营 C 端渠道）
 internal/
@@ -256,7 +256,7 @@ make db                             # 重建主库（迁移 → 种子 → 验�
 - [ ] `python3 scripts/mapping_dryrun.py` 演练库不变量全 PASS
 - [ ] `make counts` 的数与文档里写的数一致（文档只引用，不自己抄）
 - [ ] [`spec/00-overview.md`](../spec/00-overview.md) §8 变更记录追加一行
-- [ ] `docs/schema-design.md` 的表清单/索引统计数字同步更新
+- [ ] `docs/schema-design.md` 的表清单与主题视图条数同步更新（条数跑 `make counts`，不要手抄）
 - [ ] `docs/ddd.md` 若涉及聚合边界或状态机，同步更新
 - [ ] 改动 C 端展示或购买链路 → `docs/c-end-model.md` 同步更新
 - [ ] 改动公开读接口的渠道口径 → [`spec/21-c-end-api.md`](../spec/21-c-end-api.md) §5.18 第三条同步更新，且「只服务在营的自营 C 端、渠道不存在与不对外服务给同一个答复、四个端点共用一个闸门」仍生效

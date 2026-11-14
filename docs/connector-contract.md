@@ -445,7 +445,7 @@ python3 scripts/mapping_dryrun.py --poc scripts/poc/index.html    # 直接生成
 2. **覆盖语义匹配** —— 每个源变体 → 规范变体的映射 + `coverage.axes` 原文 + 判定
 3. **变体级路由** —— `route_rank` / 源净价 / 折算成本 / 对客售价 / 锁价标记
 4. **组合映射** —— 组合表达式解出来的配方（规范组件 ← 源 SKU / 两侧数量）与解不出的缺口
-5. **不变量自检** —— 108 条逐条绿/红
+5. **不变量自检** —— 演练库实跑 `v_invariant_checks`，逐条绿/红（条数跑 `make counts`）
 
 顶部可按源（Trip.com / GlobalTix）筛选，统计卡片实时反映条目数。
 
