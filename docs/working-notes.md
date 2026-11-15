@@ -48,6 +48,12 @@ db/migrations/025_*.sql        源侧的售卖份数区间（fn_source_quantity_
 db/migrations/026_*.sql        按团报价的单位价口径（fn_unit_amount）—— 总价 → 单位价只有一个实现，写路径与待改派清单同口径
 db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory 归一 NULL → 900 秒）—— 默认值住在库里，不住在调用方
 db/migrations/028_*.sql        凭证过期作业（fn_expire_vouchers）—— 券过期了由作业统一改，「交付过」口径补上 expired
+db/migrations/029_*.sql        不变量视图压平 —— 五条链各留一个自包含视图，v_invariant_checks 是它们的并集
+db/migrations/030_*.sql        源侧兑现窗口落到列上（supplier_variant.valid_days）—— 源侧肯兑现几天不再靠猜
+db/migrations/031_*.sql        选源时看源侧兑现窗口 —— 源侧没报不拦，源侧报了且短于承诺则不进候选
+db/migrations/032_*.sql        退款承诺的执行者（fn_refund_policy）—— 发起与放行各判一次，金额是净额
+db/migrations/033_*.sql        退款回调报文合并而不是覆盖 —— 一次回调不许把发起时的承诺快照洗掉
+db/migrations/034_*.sql        同步落库侧的不变量 —— 空标识不许落库、人工判过的映射依据不许被洗掉
 db/migrations/035_*.sql        B 端运营台：操作员身份（b2b_operator）+ 运营读模型（v_ops_*）—— 内部视角，跨渠道读
 db/migrations/036_*.sql        运营台商品详情：六张 v_ops_product_* 读模型 —— 看得见一个商品内部长什么样
 db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）

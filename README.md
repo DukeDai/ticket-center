@@ -3,13 +3,17 @@
 面向 OTA 的票券中台：把来自多个 GDS / 票务平台（Ingresso、FonTicket、Goodfellows·JTB、GlobalTix、票付通、Zowoyoo 自由行、Trip.com…）
 的票券归一化成**一套规范商品模型**，对外以同一套商品/价格/库存/订单模型同时支撑 **B 端分销**与 **C 端自营**。
 
-> **当前阶段：领域模型 + 物理模型 + 验收查询 + 接入层（Go）+ 下单 / 履约 / 退款 / 核销写路径 + C 端只读 API。**
+> **当前阶段：领域模型 + 物理模型 + 验收查询 + 接入层（Go）+ 下单 / 履约 / 退款 / 核销写路径 + C 端只读 API + B 端内部运营台。**
 > 接入层已用 Go 实现（`cmd/tc-connect` + `internal/`）：Trip.com 分销侧协议完整核对，
 > GlobalTix 端点待商务确认，其余五源待文档。拿到凭证即可直接跑分层连通性测试。
 > 交易侧四段写路径各有唯一实现：下单 `fn_place_order`、履约 `005`、退款 `007`、核销 `008`。
 > **C 端只读 API 已落地**（`cmd/tc-api` + `internal/capi`：浏览 / 变体差异 / 套餐构成 / 日历四个端点，
 > 只读读模型、不 join 主数据）；但**购物车 → 下单 → 支付**这一段还没开口子（没有调用方身份），
-> Web 也没有。各源适配器的真实联调与业务编排作业尚未实施。
+> Web 也没有。**B 端内部运营台已落地**（`cmd/tc-bapi`：网页 + RESTful API 一套身份，
+> 跨渠道读，写侧复用已有写路径）——只做内部视角，不做分销商自助。各源适配器的真实联调与业务编排作业尚未实施。
+>
+> **阶段收尾记录**（2026-11-15）：停在哪、还差什么、接手的人先看哪里 ——
+> 见 [`docs/closing-2026-11-15.md`](docs/closing-2026-11-15.md)。
 
 ---
 
@@ -379,6 +383,7 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 | [`docs/connector-contract.md`](docs/connector-contract.md) | 供应源接入端口、错误四分类、幂等重试、七源差异矩阵、**§9 接入层实现现状** |
 | [`docs/integrations.md`](docs/integrations.md) | **接入层（Go）**：包结构、设计纪律、CLI 用法、拿到授权后的验证清单 |
 | [`docs/review-2026-11-14-normalization.md`](docs/review-2026-11-14-normalization.md) | **交叉评审纪要**（2026-11-14）：7 条缺陷指控的判定与证据、被撤回的主张、实施顺序 |
+| [`docs/closing-2026-11-15.md`](docs/closing-2026-11-15.md) | **阶段收尾记录**（2026-11-15）：停在哪、还差什么（外部凭证 / 业务决策 / 顾客身份）、接手的人先看哪里、这个项目教会了什么 |
 | [`db/migrations/`](db/migrations/) | 全部 DDL：冻结的建库基线 + 后续迁移文件（`tc-connect migrate` 应用） |
 | [`db/seed.sql`](db/seed.sql) | 种子数据 |
 | [`db/verify.sql`](db/verify.sql) | 验收查询 + 不变量断言 |
