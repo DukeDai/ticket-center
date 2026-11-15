@@ -15,6 +15,7 @@
 #   make jobs      跑一遍批处理作业（交给外部调度器按 cron 调）
 #   make order-demo 下单链路端到端演示（找有售价的日期 → 下单 → 幂等重放 → 查单）
 #   make api       起 C 端只读 API（只读读模型）
+#   make bapi      起 B 端运营台（内部工具，网页 + API，要先登录）
 #   make poc       生成前端 POC 页面
 #   make counts    打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
 
@@ -25,11 +26,13 @@ PGHOST ?= 127.0.0.1
 PGDATABASE ?= ticket_center
 BIN := bin/tc-connect
 API := bin/tc-api
+BAPI := bin/tc-bapi
 API_ADDR ?= :8080
+BAPI_ADDR ?= :8090
 
 export PATH := /usr/local/go/bin:$(PATH)
 
-.PHONY: all build test vet fmt check mock layers dryrun poc db verify sources clean migrate dbstatus dbcheck refresh jobs order-demo api counts lint
+.PHONY: all build test vet fmt check mock layers dryrun poc db verify sources clean migrate dbstatus dbcheck refresh jobs order-demo api bapi counts lint
 
 all: build
 
@@ -37,7 +40,8 @@ build:
 	@mkdir -p bin
 	$(GO) build -o $(BIN) ./cmd/tc-connect
 	$(GO) build -o $(API) ./cmd/tc-api
-	@echo "已构建 $(BIN) $(API)"
+	$(GO) build -o $(BAPI) ./cmd/tc-bapi
+	@echo "已构建 $(BIN) $(API) $(BAPI)"
 
 test:
 	$(GO) test ./... -timeout 120s
@@ -135,6 +139,14 @@ order-demo: build
 # 起 C 端只读 API（只读读模型，不 join 主数据）
 api: build
 	./$(API) --db $(PGDATABASE) --addr $(API_ADDR)
+
+# 起 B 端运营台。
+#
+# 这是**内部工具**，不是开放平台：票到我们这里就自营，没有分销商自助这一层。
+# 它跨渠道看目录、订单与履约缺口，所以它必须先登录 —— 身份是 b2b_operator。
+# 没有操作员就用 `tc-connect operator create --code … --name … --role admin` 建一个。
+bapi: build
+	./$(BAPI) --db $(PGDATABASE) --addr $(BAPI_ADDR)
 
 # 重建主库（会清库）并跑验收
 db: build

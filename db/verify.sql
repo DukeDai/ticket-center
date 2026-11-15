@@ -112,6 +112,83 @@ FROM product p
 ORDER BY p.product_code;
 
 \echo ''
+\echo '════════════════════════ D3. B端运营台读模型（跨渠道视角） ════════════════════════'
+-- 运营台是内部视角：票到我们这里就自营，没有分销商自助这一层。
+-- 它跨渠道看 —— C 端、B 端、企业客户各自一栏。
+-- 期望：D3.1 三个渠道都在（B2B_HK 是 b2b_distributor），D3.2 订单跨渠道可见。
+
+-- D3.1 渠道总览
+SELECT channel_code, channel_name, channel_type, settlement_mode, commission_rate,
+       default_currency, online_listings, draft_listings,
+       order_count, paid_order_count, unpaid_order_count, suspected_lost_count
+FROM v_ops_channel_overview
+ORDER BY channel_id;
+
+-- D3.2 商品目录（一个商品 × 一个渠道一行）
+SELECT product_code, product_title, channel_code, listing_status, default_currency,
+       variant_count, source_count, price_policy
+FROM v_ops_product_catalog
+ORDER BY product_code, channel_code;
+
+-- D3.3 订单列表（跨渠道）
+SELECT order_no, channel_code, customer_name, order_status, payment_status,
+       fulfillment_status, currency, total, cost_total, commission_amount,
+       item_count, voucher_count, booking_count
+FROM v_ops_order_list
+ORDER BY placed_at DESC;
+
+-- D3.4 履约漏斗（口径取自 v_order_fulfillment_gap）
+SELECT order_no, channel_code, order_status, payment_status,
+       booking_count, confirmed_bookings, failed_bookings,
+       issued_vouchers, used_vouchers, suspected_lost
+FROM v_ops_fulfillment_gap
+ORDER BY placed_at;
+
+-- D3.5 供给形态与缺口（单张 / 配方 / 套装并排）
+SELECT product_code, variant_code, supply_form, date, channel_id,
+       supplier_codes, supplier_count, cost_in_target, currency,
+       can_fulfil, gaps, admission_quantity, valid_days
+FROM v_ops_supply_forms
+ORDER BY product_code, variant_code, date, channel_id;
+
+-- D3.6 退款台账
+SELECT refund_no, order_no, channel_code, refund_status, refund_amount, currency,
+       reason, requested_by, approved_by, error_code
+FROM v_ops_refund_ledger
+ORDER BY requested_at DESC;
+
+-- D3.7 核销记录（永远追加，这里不去重）
+SELECT voucher_no, ticket_code, order_no, channel_code, result, reason,
+       gate_name, consumed_quantity, scanned_at
+FROM v_ops_redemption_log
+ORDER BY scanned_at DESC;
+
+-- D3.8 库存预占
+SELECT hold_no, channel_code, quantity, hold_status, order_id, cart_id,
+       created_at, expires_at
+FROM v_ops_inventory_hold
+ORDER BY created_at DESC;
+
+-- D3.9 源健康度
+SELECT code, name, status, active_products, mapped_products, payloads_1h,
+       last_sync_at, failed_jobs_24h
+FROM v_ops_supplier_health
+ORDER BY code;
+
+-- D3.10 结算缺口
+SELECT supplier_code, booking_no, external_booking_id, order_no, booking_status, settlement_lines
+FROM v_ops_settlement_gap
+ORDER BY supplier_code;
+
+-- D3.11 待改派清单
+SELECT order_no, channel_code, order_item_id, visit_date, quantity,
+       current_supplier, new_supplier,
+       current_unit_price, new_unit_price,
+       current_unit_cost, new_unit_cost, can_reassign, stale_reason
+FROM v_ops_reassign_candidates
+ORDER BY order_no;
+
+\echo ''
 \echo '════════════════════════ E. 不变量断言（全部应 passed=t） ════════════════════════'
 -- 断言来源：迁移文件里的 v_invariant_checks 视图（条数以视图定义为准，单一事实来源）
 SELECT seq, check_name, expected, actual, passed,

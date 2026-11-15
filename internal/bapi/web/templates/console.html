@@ -1,0 +1,35 @@
+{{define "console"}}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运营台 · ticket-center</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1><span class="dot"></span>运营台</h1>
+    <div class="sub">票到我们这里就自营。这一屏看的是全渠道 —— C 端、分销、企业客户各自的目录、订单与履约缺口。</div>
+  </div>
+  <div class="who">
+    <b>{{.Operator.Name}}</b>
+    <span class="role {{.Operator.Role}}">{{.Operator.Role}}</span>
+    <span class="mono">{{.Operator.Code}}</span>
+    <form method="post" action="/logout" style="display:inline">
+      <button class="tab" type="submit">登出</button>
+    </form>
+  </div>
+</header>
+
+<nav class="tabs">
+  {{range .Tabs}}<a class="tab {{if eq .Key $.Tab}}on{{end}}" href="/console?tab={{.Key}}">{{.Label}}{{if .Count}}<span class="n">{{.Count}}</span>{{end}}</a>{{end}}
+</nav>
+
+{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+
+{{template "tab_body" .}}
+</body>
+</html>
+{{end}}

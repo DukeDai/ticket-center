@@ -95,6 +95,29 @@ curl -s "http://127.0.0.1:8080/api/v1/products?channel_id=1&locale=zh-CN"
 只服务在营的自营 C 端渠道（`channel_type='b2c_own'`），其余渠道回 403。
 写侧（购物车 / 结算 / 下单 / 支付）还没开 —— 系统里还没有调用方身份。
 
+**B 端内部运营台** —— 跨渠道的运营视角，网页与 RESTful API 一套身份：
+
+```bash
+make bapi                                     # 起服务（默认 :8090）
+open http://127.0.0.1:8090/login               # 登录后进运营台
+```
+
+票到我们这里就自营，没有分销商自助这一层 —— 所以 B 端是**内部工具**，
+身份是 `b2b_operator`，每个端点都要过会话闸门（它连着生产库）。
+角色分三档：`viewer` 只读、`operator` 可下单与发起退款、`admin` 另有放行退款与改派。
+
+操作员在 CLI 里建（凭证随机、明文只显示一次）：
+
+```bash
+./bin/tc-connect operator create --code ops_admin --name 管理员 --role admin
+./bin/tc-connect operator list
+./bin/tc-connect operator disable --code ops_admin     # 停用并换盐，已签发的会话当场作废
+```
+
+种子库里已有三个固定操作员（`seed_admin` / `seed_operator` / `seed_viewer`，
+明文 `seed-<role>-secret`）—— 那只是本地种子用的公开常量，真环境一个都没有。
+口径见 [`spec/22-b-side-console.md`](spec/22-b-side-console.md) §5.28。
+
 **接入层（Go）** —— 拿不到凭证也能跑 L0 连通性与离线自检：
 
 ```bash
@@ -124,7 +147,7 @@ export TRIPCOM_AID=… TRIPCOM_SID=… TRIPCOM_KEY=…
 
 | 项 | 结果 |
 |---|---|
-| 表 / 视图 / 索引 / 触发器 / CHECK | 77 + 1 迁移账本 / 61 / 227 / 39 / 99 |
+| 表 / 视图 / 索引 / 触发器 / CHECK | `make counts` 的「库对象」段（口径写在标签后面，别换口径） |
 | 种子数据 | `make counts` 的「种子行数」段（表名取自 `db/seed.sql` 自己的统计段，不另抄一份） |
 | 不变量断言 | **全 PASS**（`v_invariant_checks`；条数跑 `make counts`；每条不变量住在 SPEC §4 对应小节，门禁是 `db/verify.sql` 的 F 段） |
 
@@ -355,14 +378,15 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 | [`db/seed.sql`](db/seed.sql) | 种子数据 |
 | [`db/verify.sql`](db/verify.sql) | 验收查询 + 不变量断言 |
 | [`cmd/tc-api/`](cmd/tc-api/) | **C 端只读 API 服务**：浏览 / 变体差异 / 套餐构成 / 日历 |
-| [`cmd/tc-connect/`](cmd/tc-connect/) | **接入层 CLI**：`sources` / `layers` / `mock` / `normalize` / `compose` / `price` / `migrate` / `refresh` / `jobs` / `order` / `fulfill` / `refund` / `redeem` / `stock` / `hold` / `variant` |
-| [`internal/`](internal/) | **接入层实现**：传输层 / 凭证 / 归一化 / 各源适配器 / 归档幂等 / 定价读侧 / 迁移引擎 / 读模型刷新 / 状态机读侧 / 下单 / 改派 / 履约 / 退款 / 核销 / 库存 / 异构差异读侧 / 覆盖语义 / 组合配方写侧 / **C 端 API** / mock / 业务 ID / 测试库 |
+| [`cmd/tc-bapi/`](cmd/tc-bapi/) | **B 端内部运营台服务**：网页 + RESTful API（跨渠道读，写侧复用已有写路径） |
+| [`cmd/tc-connect/`](cmd/tc-connect/) | **接入层 CLI**：`sources` / `layers` / `mock` / `normalize` / `compose` / `price` / `migrate` / `refresh` / `jobs` / `order` / `fulfill` / `refund` / `redeem` / `stock` / `hold` / `variant` / `operator` |
+| [`internal/`](internal/) | **接入层实现**：传输层 / 凭证 / 归一化 / 各源适配器 / 归档幂等 / 定价读侧 / 迁移引擎 / 读模型刷新 / 状态机读侧 / 下单 / 改派 / 履约 / 退款 / 核销 / 库存 / 异构差异读侧 / 覆盖语义 / 组合配方写侧 / **C 端 API** / **B 端运营台** / mock / 业务 ID / 测试库 |
 | [`configs/`](configs/) | 传输层配置（端点 / ICODE / 凭证口径 / 错误码）+ 映射规则（单一真相） |
 | [`fixtures/`](fixtures/) | 真实报文结构的样例（canonical / trip_com / globaltix） |
 | [`scripts/mapping_dryrun.py`](scripts/mapping_dryrun.py) | **无凭证集成演练**：用真实报文结构跑一遍 mapping → 路由（归一化调用 Go 实现） |
 | [`scripts/order_demo.py`](scripts/order_demo.py) | **下单链路演示**：找有售价的日期 → 下单 → 幂等重放 → 查单 |
 | [`scripts/poc/index.html`](scripts/poc/index.html) | 前端 POC：变体矩阵 / 覆盖语义匹配 / 变体级路由 / 模型缺口（演练生成物） |
-| [`Makefile`](Makefile) | build / test / mock / layers / dryrun / db / check / order-demo / jobs / api |
+| [`Makefile`](Makefile) | build / test / mock / layers / dryrun / db / check / order-demo / jobs / api / bapi |
 | [`AGENTS.md`](AGENTS.md) | 仓库级硬约束与命令约定 |
 
 ---
@@ -377,6 +401,6 @@ curl -s "http://127.0.0.1:8080/api/v1/variants/19/calendar?channel_id=1"
 - [x] **预订的单位 = 源 SKU**：参数化源里成人与儿童是同一个源 SKU，按成分建预订就是同一个源 SKU 订两次（源侧两张订单单、对账对不上、退款退不掉）—— 见上面「预订的单位是源 SKU」
 - [x] **组合进 C 端读模型**：组合的售价行由 `fn_sync_combo_calendar()` 推出来，构成进 `c_variant_composition`（10 行），有效期终点 = 成分窗口的并集（不变量 89）—— 见上面「组合在 C 端」
 - [ ] 接入层之上的**业务编排作业**（同步调度 / 改派 / 自动补报 / 退款重试）
-- [ ] B 端管理台：商品/上架/路由/映射审核/异常单
+- [x] **B 端内部运营台**：网页 + RESTful API（`cmd/tc-bapi`）—— 跨渠道看目录 / 订单 / 履约缺口 / 供给形态 / 退款 / 核销 / 源健康度 / 结算缺口 / 待改派，写侧复用已有写路径并做渠道归属校验。**只做内部视角**，不做分销商自助（票到我们这里就自营）；身份是 `b2b_operator`，建号在 CLI 里。见 [SPEC §5.28](spec/22-b-side-console.md)
 - [ ] C 端链路：搜索 → 详情 → 选场次 → 下单 → ~~出券 → 核销~~（出券与核销的写路径都已落地；**读侧已开成 HTTP 接口** —— `cmd/tc-api` 的浏览 / 变体差异 / 套餐构成 / 日历四个端点；剩下的是搜索、详情界面与购买链路的写侧，还差调用方身份与鉴权）
 - [ ] 订单表分区、只读副本、源报文冷热分离（方案见 `docs/schema-design.md` §9）

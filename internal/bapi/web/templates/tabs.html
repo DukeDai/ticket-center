@@ -1,0 +1,466 @@
+{{define "tab_body"}}
+{{if eq .Tab "overview"}}
+
+<div class="stats">
+  <div class="stat"><b>{{.Overview.TotalChannels}}</b><span>渠道</span></div>
+  <div class="stat"><b>{{.Overview.TotalListings}}</b><span>在架商品</span></div>
+  <div class="stat"><b>{{.Overview.TotalOrders}}</b><span>订单</span></div>
+  <div class="stat ok"><b>{{.Overview.PaidOrders}}</b><span>已收款</span></div>
+  <div class="stat warn"><b>{{.Overview.UnpaidOrders}}</b><span>未收款</span></div>
+  <div class="stat bad"><b>{{.Overview.SuspectedLost}}</b><span>付了没出票</span></div>
+  <div class="stat bad"><b>{{.Overview.RefundsOpen}}</b><span>退款在途</span></div>
+</div>
+
+<div class="card">
+  <h2>渠道总览</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>渠道</th><th>类型</th><th>结算</th><th>佣金</th><th>币种</th>
+        <th class="num">在架</th><th class="num">草稿</th><th class="num">订单</th>
+        <th class="num">已收</th><th class="num">未收</th><th class="num">付了没出票</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Overview.Channels}}
+      <tr>
+        <td><b>{{.ChannelName}}</b> <span class="mono">{{.ChannelCode}}</span></td>
+        <td><span class="pill">{{.ChannelType}}</span></td>
+        <td>{{.SettlementMode}}</td>
+        <td class="num">{{.CommissionRate}}</td>
+        <td class="mono">{{.DefaultCurrency}}</td>
+        <td class="num">{{.OnlineListings}}</td>
+        <td class="num">{{.DraftListings}}</td>
+        <td class="num">{{.OrderCount}}</td>
+        <td class="num">{{.PaidOrderCount}}</td>
+        <td class="num">{{.UnpaidOrderCount}}</td>
+        <td class="num">{{if .SuspectedLostCnt}}<span class="pill bad">{{.SuspectedLostCnt}}</span>{{else}}0{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="11" style="color:var(--fg3);text-align:center;padding:26px">还没有渠道</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "orders"}}
+
+<div class="card">
+  <h2>订单<span class="n">{{len .Orders}}</span></h2>
+  <form class="filters" method="get" action="/console">
+    <input type="hidden" name="tab" value="orders">
+    <input type="text" name="q" placeholder="订单号或客户名" value="{{.Filter.OrderKeyword}}">
+    <select name="status">
+      <option value="">全部状态</option>
+      {{range .Filter.OrderStatuses}}<option value="{{.}}" {{if eq . $.Filter.OrderStatus}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+    <select name="payment_status">
+      <option value="">全部收款</option>
+      {{range .Filter.PaymentStatuses}}<option value="{{.}}" {{if eq . $.Filter.OrderPayment}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+    <button class="tab" type="submit">筛选</button>
+  </form>
+  <table>
+    <thead>
+      <tr>
+        <th>订单号</th><th>渠道</th><th>客户</th><th>状态</th><th>收款</th><th>履约</th>
+        <th class="num">金额</th><th>币种</th><th class="num">成本</th><th class="num">佣金</th>
+        <th class="num">明细</th><th>下单时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Orders}}
+      <tr>
+        <td class="mono"><a href="/console?tab=order_detail&order_id={{.OrderID}}">{{.OrderNo}}</a></td>
+        <td><span class="pill">{{.ChannelCode}}</span></td>
+        <td>{{if .CustomerName}}{{.CustomerName}}{{else}}<span class="mono">{{.MemberCode}}</span>{{end}}</td>
+        <td><span class="pill {{statusPill .OrderStatus}}">{{.OrderStatus}}</span></td>
+        <td><span class="pill {{paymentPill .PaymentStatus}}">{{.PaymentStatus}}</span></td>
+        <td><span class="pill {{statusPill .FulfillmentStatus}}">{{.FulfillmentStatus}}</span></td>
+        <td class="num">{{.Total}}</td>
+        <td class="mono">{{.Currency}}</td>
+        <td class="num">{{.CostTotal}}</td>
+        <td class="num">{{.CommissionAmount}}</td>
+        <td class="num">{{.ItemCount}}</td>
+        <td class="mono">{{shortTime .PlacedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="12" style="color:var(--fg3);text-align:center;padding:26px">没有符合条件的订单</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "order_detail"}}
+
+{{with .OrderDetail}}
+<div class="card">
+  <h2>{{.OrderNo}} <span class="pill {{statusPill .OrderStatus}}">{{.OrderStatus}}</span>
+      <span class="pill {{paymentPill .PaymentStatus}}">{{.PaymentStatus}}</span>
+      <span class="pill {{statusPill .FulfillmentStatus}}">{{.FulfillmentStatus}}</span></h2>
+  <div class="stats">
+    <div class="stat"><b>{{.Total}}</b><span>订单金额 {{.Currency}}</span></div>
+    <div class="stat"><b>{{.CostTotal}}</b><span>成本</span></div>
+    <div class="stat ok"><b>{{.CommissionAmount}}</b><span>佣金</span></div>
+    <div class="stat"><b>{{len .Items}}</b><span>明细</span></div>
+    <div class="stat"><b>{{len .Bookings}}</b><span>预订</span></div>
+    <div class="stat"><b>{{len .Vouchers}}</b><span>券</span></div>
+  </div>
+  <table>
+    <thead><tr><th>商品</th><th>变体</th><th>源</th><th class="num">数量</th><th class="num">单价</th><th class="num">单位成本</th><th class="num">小计</th><th>计价</th><th>状态</th></tr></thead>
+    <tbody>
+      {{range .Items}}
+      <tr>
+        <td>{{.ProductTitle}}</td>
+        <td class="mono">{{.VariantCode}}</td>
+        <td>{{.SupplierName}}</td>
+        <td class="num">{{.Quantity}}</td>
+        <td class="num">{{.UnitPrice}}</td>
+        <td class="num">{{.UnitCost}}</td>
+        <td class="num">{{.TotalPrice}}</td>
+        <td class="mono">{{.PricingBasis}}</td>
+        <td><span class="pill {{statusPill .Status}}">{{.Status}}</span></td>
+      </tr>
+      {{else}}
+      <tr><td colspan="9" style="color:var(--fg3);text-align:center;padding:20px">没有明细</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>预订<span class="n">{{len .Bookings}}</span></h2>
+    <table>
+      <thead><tr><th>预订号</th><th>源</th><th>状态</th><th class="num">尝试</th><th>确认时间</th></tr></thead>
+      <tbody>
+        {{range .Bookings}}
+        <tr>
+          <td class="mono">{{.BookingNo}}</td>
+          <td>{{.SupplierName}}</td>
+          <td><span class="pill {{statusPill .Status}}">{{.Status}}</span></td>
+          <td class="num">{{.AttemptCount}}</td>
+          <td class="mono">{{shortTime .ConfirmedAt}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" style="color:var(--fg3);text-align:center;padding:20px">没有预订</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>券<span class="n">{{len .Vouchers}}</span></h2>
+    <table>
+      <thead><tr><th>券号</th><th>票码</th><th>状态</th><th>有效期</th><th>持票人</th></tr></thead>
+      <tbody>
+        {{range .Vouchers}}
+        <tr>
+          <td class="mono">{{.VoucherNo}}</td>
+          <td class="mono">{{.Code}}</td>
+          <td><span class="pill {{voucherPill .Status}}">{{.Status}}</span></td>
+          <td class="mono">{{shortTime .ValidFrom}} → {{shortTime .ValidTo}}</td>
+          <td>{{.HolderName}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" style="color:var(--fg3);text-align:center;padding:20px">没有券</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>支付<span class="n">{{len .Payments}}</span></h2>
+  <table>
+    <thead><tr><th>方式</th><th class="num">金额</th><th>币种</th><th>状态</th><th>渠道</th><th>流水号</th><th>支付时间</th></tr></thead>
+    <tbody>
+      {{range .Payments}}
+      <tr>
+        <td>{{.PaymentMethod}}</td>
+        <td class="num">{{.Amount}}</td>
+        <td class="mono">{{.Currency}}</td>
+        <td><span class="pill {{paymentPill .Status}}">{{.Status}}</span></td>
+        <td>{{.Provider}}</td>
+        <td class="mono">{{.ProviderTxnID}}</td>
+        <td class="mono">{{shortTime .PaidAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="7" style="color:var(--fg3);text-align:center;padding:20px">没有支付记录</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<div class="empty">没有找到这一单。<a href="/console?tab=orders">回到订单列表</a></div>
+{{end}}
+
+{{else if eq .Tab "gaps"}}
+
+<div class="card">
+  <h2>履约缺口<span class="n">{{len .Gaps}}</span></h2>
+  <p class="hint">
+    「付了没出票」的口径取自库里的 <span class="mono">v_order_fulfillment_gap</span>，运营台不重算。
+  </p>
+  <table>
+    <thead>
+      <tr><th>订单号</th><th>渠道</th><th>收款</th><th class="num">预订</th><th class="num">已确认</th>
+          <th class="num">失败</th><th class="num">券</th><th class="num">已出票</th><th class="num">已核销</th><th>判定</th><th>下单时间</th></tr>
+    </thead>
+    <tbody>
+      {{range .Gaps}}
+      <tr>
+        <td class="mono"><a href="/console?tab=order_detail&order_id={{.OrderID}}">{{.OrderNo}}</a></td>
+        <td><span class="pill">{{.ChannelCode}}</span></td>
+        <td><span class="pill {{paymentPill .PaymentStatus}}">{{.PaymentStatus}}</span></td>
+        <td class="num">{{.BookingCount}}</td>
+        <td class="num">{{.ConfirmedBookings}}</td>
+        <td class="num">{{.FailedBookings}}</td>
+        <td class="num">{{.VoucherCount}}</td>
+        <td class="num">{{.IssuedVouchers}}</td>
+        <td class="num">{{.UsedVouchers}}</td>
+        <td>{{if .SuspectedLost}}<span class="pill bad">付了没出票</span>{{else}}<span class="pill ok">正常</span>{{end}}</td>
+        <td class="mono">{{shortTime .PlacedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="11" style="color:var(--fg3);text-align:center;padding:26px">没有缺口。履约都跟上了。</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "supply"}}
+
+<div class="card">
+  <h2>供给形态对照<span class="n">{{len .SupplyForms}}</span></h2>
+  <p class="hint">
+    单张、配方、套装在同一张表上对照（口径取自 <span class="mono">v_variant_supply_forms</span>）。
+    缺口栏写的是「差在哪」，不是「大概不行」。
+  </p>
+  <form class="filters" method="get" action="/console">
+    <input type="hidden" name="tab" value="supply">
+    <input type="text" name="date" placeholder="日期 YYYY-MM-DD" value="{{.Filter.SupplyDate}}">
+    <label><input type="checkbox" name="gaps_only" value="true" {{if .Filter.SupplyGapsOnly}}checked{{end}}> 只看有缺口的</label>
+    <button class="tab" type="submit">筛选</button>
+  </form>
+  <table>
+    <thead>
+      <tr><th>商品</th><th>变体</th><th>日期</th><th>形态</th><th>源</th><th class="num">成本</th>
+          <th>币种</th><th class="num">成分</th><th class="num">入场份数</th><th class="num">天数</th>
+          <th>能供</th><th>缺口</th></tr>
+    </thead>
+    <tbody>
+      {{range .SupplyForms}}
+      <tr>
+        <td>{{.ProductTitle}}</td>
+        <td class="mono">{{.VariantCode}}</td>
+        <td class="mono">{{.Date}}</td>
+        <td><span class="pill info">{{.SupplyForm}}</span></td>
+        <td class="mono">{{.SupplierCodes}}</td>
+        <td class="num">{{if .CostInTarget}}{{.CostInTarget}}{{else}}—{{end}}</td>
+        <td class="mono">{{.Currency}}</td>
+        <td class="num">{{.ComponentCount}}</td>
+        <td class="num">{{.AdmissionQuantity}}</td>
+        <td class="num">{{.ValidDays}}</td>
+        <td>{{if .CanFulfil}}<span class="pill ok">能供</span>{{else}}<span class="pill bad">不能供</span>{{end}}</td>
+        <td style="color:var(--fg2);font-size:12px">{{.Gaps}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="12" style="color:var(--fg3);text-align:center;padding:26px">没有可售单元</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "refunds"}}
+
+<div class="card">
+  <h2>退款台账<span class="n">{{len .Refunds}}</span></h2>
+  <p class="hint">
+    承诺（可退 / 截止时长 / 手续费）是发起时定下的快照，这里带出来的是承诺本身，不是今天的政策。
+  </p>
+  <form class="filters" method="get" action="/console">
+    <input type="hidden" name="tab" value="refunds">
+    <select name="status">
+      <option value="">全部状态</option>
+      {{range .Filter.RefundStatuses}}<option value="{{.}}" {{if eq . $.Filter.RefundStatus}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+    <button class="tab" type="submit">筛选</button>
+  </form>
+  <table>
+    <thead>
+      <tr><th>退款单</th><th>订单</th><th>渠道</th><th>状态</th><th class="num">金额</th><th>币种</th>
+          <th>发起人</th><th>放行人</th><th>原因</th><th>失败原因</th><th>发起时间</th></tr>
+    </thead>
+    <tbody>
+      {{range .Refunds}}
+      <tr>
+        <td class="mono">{{.RefundNo}}</td>
+        <td class="mono"><a href="/console?tab=order_detail&order_id={{.OrderID}}">{{.OrderNo}}</a></td>
+        <td><span class="pill">{{.ChannelCode}}</span></td>
+        <td><span class="pill {{refundPill .RefundStatus}}">{{.RefundStatus}}</span></td>
+        <td class="num">{{.RefundAmount}}</td>
+        <td class="mono">{{.Currency}}</td>
+        <td>{{.RequestedBy}}</td>
+        <td>{{if .ApprovedBy}}<b>{{.ApprovedBy}}</b>{{else}}—{{end}}</td>
+        <td style="font-size:12px;color:var(--fg2)">{{.Reason}}</td>
+        <td style="font-size:12px;color:var(--bad)">{{if .ErrorMessage}}{{.ErrorMessage}}{{else}}—{{end}}</td>
+        <td class="mono">{{shortTime .RequestedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="11" style="color:var(--fg3);text-align:center;padding:26px">没有退款单</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "redemptions"}}
+
+<div class="card">
+  <h2>核销记录<span class="n">{{len .Redemptions}}</span></h2>
+  <p class="hint">
+    核销记录永远追加 —— 一次扫票成功失败都落一条，不覆盖、不去重。
+    重复扫票本身就是事实（票务欺诈的入口），压掉就看不见了。
+  </p>
+  <table>
+    <thead>
+      <tr><th>券号</th><th>票码</th><th>订单</th><th>渠道</th><th>结果</th><th>原因</th>
+          <th>闸机</th><th>操作人</th><th class="num">扣减</th><th>扫描时间</th></tr>
+    </thead>
+    <tbody>
+      {{range .Redemptions}}
+      <tr>
+        <td class="mono">{{.VoucherNo}}</td>
+        <td class="mono">{{.TicketCode}}</td>
+        <td class="mono">{{.OrderNo}}</td>
+        <td><span class="pill">{{.ChannelCode}}</span></td>
+        <td><span class="pill {{redemptionPill .Result}}">{{.Result}}</span></td>
+        <td style="font-size:12px;color:var(--fg2)">{{.Reason}}</td>
+        <td>{{.GateName}}</td>
+        <td class="mono">{{.OperatorID}}</td>
+        <td class="num">{{.ConsumedQty}}</td>
+        <td class="mono">{{shortTime .ScannedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="10" style="color:var(--fg3);text-align:center;padding:26px">没有核销记录</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "sources"}}
+
+<div class="grid2">
+  <div class="card">
+    <h2>源健康度<span class="n">{{len .Suppliers}}</span></h2>
+    <table>
+      <thead><tr><th>源</th><th>状态</th><th class="num">在售商品</th><th class="num">已映射</th><th class="num">近 1 小时报文</th><th class="num">近 24 小时失败</th><th>最近同步</th></tr></thead>
+      <tbody>
+        {{range .Suppliers}}
+        <tr>
+          <td><b>{{.Name}}</b> <span class="mono">{{.Code}}</span></td>
+          <td><span class="pill {{supplierPill .Status}}">{{.Status}}</span></td>
+          <td class="num">{{.ActiveProducts}}</td>
+          <td class="num">{{.MappedProducts}}</td>
+          <td class="num">{{.Payloads1h}}</td>
+          <td class="num">{{if .FailedJobs24h}}<span class="pill bad">{{.FailedJobs24h}}</span>{{else}}0{{end}}</td>
+          <td class="mono">{{shortTime .LastSyncAt}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="7" style="color:var(--fg3);text-align:center;padding:26px">没有源</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>结算缺口<span class="n">{{len .SettlementGaps}}</span></h2>
+    <table>
+      <thead><tr><th>源</th><th>预订号</th><th>状态</th><th>确认时间</th><th class="num">结算行</th></tr></thead>
+      <tbody>
+        {{range .SettlementGaps}}
+        <tr>
+          <td class="mono">{{.SupplierCode}}</td>
+          <td class="mono">{{.BookingNo}}</td>
+          <td><span class="pill {{statusPill .BookingStatus}}">{{.BookingStatus}}</span></td>
+          <td class="mono">{{shortTime .ConfirmedAt}}</td>
+          <td class="num">{{.SettlementLines}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" style="color:var(--fg3);text-align:center;padding:26px">没有结算缺口</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{{else if eq .Tab "holds"}}
+
+<div class="card">
+  <h2>库存预占<span class="n">{{len .Holds}}</span></h2>
+  <p class="hint">
+    预占的 TTL 住在库里（默认 900 秒），到期时间由库算，运营台不重算。
+  </p>
+  <table>
+    <thead>
+      <tr><th>预占号</th><th>渠道</th><th class="num">数量</th><th>状态</th><th class="num">订单</th><th>创建时间</th><th>到期时间</th><th>释放时间</th></tr>
+    </thead>
+    <tbody>
+      {{range .Holds}}
+      <tr>
+        <td class="mono">{{.HoldNo}}</td>
+        <td><span class="pill">{{.ChannelCode}}</span></td>
+        <td class="num">{{.Quantity}}</td>
+        <td><span class="pill {{statusPill .HoldStatus}}">{{.HoldStatus}}</span></td>
+        <td class="num">{{.OrderID}}</td>
+        <td class="mono">{{shortTime .CreatedAt}}</td>
+        <td class="mono">{{shortTime .ExpiresAt}}</td>
+        <td class="mono">{{shortTime .ReleasedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="8" style="color:var(--fg3);text-align:center;padding:26px">没有预占</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "reassign"}}
+
+<div class="card">
+  <h2>待改派<span class="n">{{len .ReassignCandidates}}</span></h2>
+  <p class="hint">
+    未收款且成本变了或源下架的单（口径取自 <span class="mono">v_reassign_candidates</span>）。
+    改派 = 重新选源 + 重新定价，两样都取自定价函数，运营台不重排源也不重算钱。
+  </p>
+  <table>
+    <thead>
+      <tr><th>订单</th><th>明细</th><th>日期</th><th class="num">数量</th>
+          <th>当前源</th><th class="num">当前单价</th><th class="num">当前成本</th>
+          <th>候选源</th><th class="num">候选单价</th><th class="num">候选成本</th>
+          <th>能改派</th><th>原因</th></tr>
+    </thead>
+    <tbody>
+      {{range .ReassignCandidates}}
+      <tr>
+        <td class="mono"><a href="/console?tab=order_detail&order_id={{.OrderID}}">{{.OrderNo}}</a></td>
+        <td class="num">{{.OrderItemID}}</td>
+        <td class="mono">{{.VisitDate}}</td>
+        <td class="num">{{.Quantity}}</td>
+        <td class="mono">{{.CurrentSupplier}}</td>
+        <td class="num">{{.CurrentUnitPrice}}</td>
+        <td class="num">{{.CurrentUnitCost}}</td>
+        <td class="mono">{{.NewSupplier}}</td>
+        <td class="num">{{.NewUnitPrice}}</td>
+        <td class="num">{{.NewUnitCost}}</td>
+        <td>{{if .CanReassign}}<span class="pill ok">能改派</span>{{else}}<span class="pill">不能</span>{{end}}</td>
+        <td style="font-size:12px;color:var(--fg2)">{{.StaleReason}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="12" style="color:var(--fg3);text-align:center;padding:26px">没有待改派的单</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{end}}
+{{end}}

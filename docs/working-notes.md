@@ -48,10 +48,12 @@ db/migrations/025_*.sql        源侧的售卖份数区间（fn_source_quantity_
 db/migrations/026_*.sql        按团报价的单位价口径（fn_unit_amount）—— 总价 → 单位价只有一个实现，写路径与待改派清单同口径
 db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory 归一 NULL → 900 秒）—— 默认值住在库里，不住在调用方
 db/migrations/028_*.sql        凭证过期作业（fn_expire_vouchers）—— 券过期了由作业统一改，「交付过」口径补上 expired
+db/migrations/035_*.sql        B 端运营台：操作员身份（b2b_operator）+ 运营读模型（v_ops_*）—— 内部视角，跨渠道读
 db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）
 db/verify.sql                 验收查询（业务视图查询 + 不变量断言，条数见 make counts）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / jobs / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
 cmd/tc-api/                  C 端只读 API 服务（浏览 / 变体差异 / 套餐构成 / 日历；只读读模型，只服务在营的自营 C 端渠道）
+cmd/tc-bapi/                  B 端内部运营台：HTTP 服务（网页 + RESTful API 一套身份；跨渠道读，写侧复用已有写路径）
 internal/
   apperr/                     错误四分类 + 缺失凭证 + 端点未确认
   credential/                 凭证解析（环境变量优先 → supplier.auth_config）
@@ -76,6 +78,7 @@ internal/
   inventory/                  库存：查可售 / 预占 / 放掉（只调库里的函数，不自己算可售数、不自己判够不够）
   variant/                    异构差异读侧：对照表 / 源覆盖缺口 / C 端读视图 / 套装构成 / 三种供给形态对照（只读视图，不重算有效天数、覆盖判定、成本与份数）
   capi/                       C 端只读 API：路由 / 参数校验 / 读模型查询（不 join 主数据、不重算事实）
+  bapi/                       B 端运营台：身份（b2b_operator + 会话）/ 运营读模型查询 / 写侧渠道归属校验 / 网页模板
   coverage/                   覆盖语义读侧：源变体覆盖住哪些可售单元（判定走库里的 fn_variant_covered）
   compose/                    组合映射写侧：组合表达式 → 配方（核组件、核数量；覆盖判定走库里的 fn_variant_covered）
   mock/                       Trip.com 分销侧协议 mock（标准库 net/http）
@@ -90,7 +93,7 @@ scripts/mapping_dryrun.py     无凭证集成演练（源报文 → 归一化 �
 scripts/order_demo.py         下单链路端到端演示（自己找有售价的日期，不写死日期）
 scripts/poc_page.py           前端 POC 渲染器
 scripts/counts.sh + counts.sql 打印各处文档引用的那些数（不变量条数 / 测试条数 / mock 断言数）
-Makefile                      build / test / mock / layers / dryrun / db / check / lint / writelint / order-demo / jobs / counts
+Makefile                      build / test / mock / layers / dryrun / db / check / lint / writelint / order-demo / jobs / counts / api / bapi
 ```
 
 ---

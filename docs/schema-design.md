@@ -184,7 +184,7 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 
 ---
 
-## 4. 表清单（77 张业务表 + 1 张迁移账本 `ops.schema_migration`）
+## 4. 表清单（张数跑 `make counts`；下面按域分组）
 
 ### 4.1 集成域（3）
 `supplier` · `supplier_raw_payload` · `sync_job_log`
@@ -215,6 +215,14 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 
 ### 4.10 运维（3）
 `event_outbox` · `notification_outbox` · `app_setting`
+
+### 4.10.1 运营台域（1）
+`b2b_operator`
+
+内部运营台的身份表。票到我们这里就自营，没有分销商自助这一层，
+所以只有**内部操作员**：一个人、一个凭证、一套角色。
+凭证明文不入库（只存 sha256 哈希），会话是无状态 HMAC cookie（撤销靠换 `session_salt`）。
+详见 §33。
 
 ### 4.11 变体域（8）
 `product_variant` · `product_variant_option` · `product_variant_relation` · `product_axis` · `product_axis_option` · `product_tag_link` · `tag` · `product_location`
@@ -292,6 +300,17 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_invariant_checks_reassign_basis` | 按团单位价口径侧 3 条有没有被破坏？（按团明细的单位价 = 团总价分摊到人 / 单位成本 = 团成本分摊到人 / 待改派清单说「成本变了」的按团明细按人均口径算也真的变了） |
 | `v_invariant_checks_hold_ttl` | 预占到期时间侧 1 条有没有被破坏？（落库的预占必须有确定的到期时间 —— NULL 的预占永远不过期，是个不会释放的库存占用） |
 | `v_invariant_checks_hardening` | 收紧口径侧 2 条有没有被破坏？（退款必须先放行 / 票码不许是连号派生的） |
+| `v_ops_channel_overview` | 每个渠道现在什么情况？（上架规模、订单规模、履约缺口条数） |
+| `v_ops_product_catalog` | 一个商品在各渠道的上架状态与价格策略（**价格不在这里算**，定价的唯一实现是 `fn_price_variant`） |
+| `v_ops_order_list` | 一行一单，带渠道、客户、金额、订单状态与履约状态 |
+| `v_ops_fulfillment_gap` | 哪些单「付了钱没出票」？（口径取自 `v_order_fulfillment_gap`） |
+| `v_ops_supply_forms` | 可售单元 × 一天 × 渠道 × 供给形态（单张/配方/套装）的缺口（口径取自 `v_variant_supply_forms`） |
+| `v_ops_refund_ledger` | 一行一笔退款，带放行人与失败原因 |
+| `v_ops_redemption_log` | 一行一次扫票（核销记录永远追加，这里不做去重） |
+| `v_ops_inventory_hold` | 一行一个预占，带到期时间（TTL 口径在库里） |
+| `v_ops_supplier_health` | 哪个源在掉链子？（口径取自 `v_supplier_sync_health`） |
+| `v_ops_settlement_gap` | 已确认预订但没进结算单（口径取自 `v_settlement_gap`） |
+| `v_ops_reassign_candidates` | 哪些明细跟当前的世界对不上了、该改派（口径取自 `v_reassign_candidates`） |
 
 ### 4.12 C 端域（20，见 `docs/c-end-model.md`）
 
@@ -2206,3 +2225,95 @@ AND (sv.valid_days IS NULL
 
 源侧把某个源变体下架时也不许改写历史订单 ——
 源下架是事实，改不了源侧，但缺一个成分的套餐不是这个套餐（见 §28）。
+
+---
+
+## 33. 运营台的身份与读模型
+
+> 这一节回答一个具体问题：**运营人员打开网页看到的那些数字，从哪来、能不能信？**
+
+### 33.1 操作员是身份，不是业务实体
+
+`b2b_operator` 只有一张表，但它承担的是**边界**：
+
+| 列 | 为什么是它 |
+|---|---|
+| `code` | 登录名，唯一。写操作要能记「谁干的」—— 退款放行走 `fn_approve_refund(approved_by)`，改派要往明细快照的 `reassignments` 里留痕。留痕里写的是一个身份，不是「某某」。 |
+| `key_hash` | **凭证的 sha256**，不是明文，也不是可逆的加密。明文只在创建时显示一次，丢了就重建（硬约束 12 的精神：不入库、不进仓库、不进日志）。 |
+| `role` | `admin` / `operator` / `viewer` 三档。放行退款与改派只给 `admin` —— 那两个动作要留操作人痕迹，让所有人都能放行，追责就断在「哪个 operator 干的」这一层。 |
+| `status` | `active` / `disabled`。停用要**立刻**生效：改 `status` 只挡新登录，已签发的会话靠换 `session_salt` 作废（换盐 → 旧签名对不上）。 |
+| `session_salt` | 会话签发用的随机盐。HMAC 签名用「`key_hash` + `session_salt`」，所以换盐就能让全部已签发会话当场失效。 |
+
+**没有会话表。** 会话是无状态的 HMAC-SHA256 cookie，内容是
+「操作员 id | 签发时刻 | 过期时刻」，8 小时过期。
+不维护会话表是因为撤销靠换盐就够 —— 一张会话表意味着另一套清理作业与另一份过期口径。
+
+**操作员不进任何聚合。** 它不进订单、不进商品、不进预订 ——
+它只回答「这次动作是谁干的」。
+
+### 33.2 为什么运营台要自己的一层读模型
+
+运营台是**跨渠道**的：它要回答「哪个渠道在堆积、哪个源在掉链子、
+哪些单付了 30 分钟还没出票」，这些问题按渠道切开就答不了。
+C 端那层读模型（§4.14）是**按渠道建**的（C 端公开接口只服务 `channel_type='b2c_own'`），
+结构上装不下「全部渠道在一屏里比」这件事。
+
+所以有了 `v_ops_*`。但它们**不带 `channel_id` 过滤** ——
+过滤是调用方按需做的事，视图是跨渠道的事实。
+
+### 33.3 包装，不是重算
+
+这 11 张视图里，有 6 张是**已有口径视图的包装**：
+
+| 运营台视图 | 包装自 |
+|---|---|
+| `v_ops_fulfillment_gap` | `v_order_fulfillment_gap` |
+| `v_ops_supply_forms` | `v_variant_supply_forms` |
+| `v_ops_supplier_health` | `v_supplier_sync_health` |
+| `v_ops_settlement_gap` | `v_settlement_gap` |
+| `v_ops_reassign_candidates` | `v_reassign_candidates` |
+| `v_ops_refund_ledger` | `sales_refund` |
+
+**重算就会出现两份「漏斗」、两份「该改派的清单」。** 而清单与写路径说的不一样时，
+清单就不可信 —— 之前按团报价的明细就踩过这个坑：
+清单直接拿团成本和人均成本比（1100 ≠ 157.14），
+每一条按团报价的未收款明细都被误报成「成本变了」，
+而真去改派写路径自己返回 `no_change`。
+
+**价格不在视图里算。** 定价的唯一实现是 `fn_price_variant`（`fn_route_candidates` 选源 +
+`fn_route_candidates` 排序），视图里自己按成本加价就出现「运营看到的价」与「真下单的价」两套。
+**份数不自己数** —— 入场份数来自 `fn_variant_composition`（与 C 端构成读模型同一个来源）。
+
+### 33.4 边界画在身份上，不画在渠道上
+
+C 端公开接口没有调用方身份，边界只能画在渠道（`channel_type='b2c_own'` 且 `status='active'`）。
+运营台**有**身份，所以它能跨渠道 —— 这正是它存在的意义。
+
+但跨渠道不等于匿名可读：`channel` 表里 B 端分销、企业客户、供应商直销的目录与报价
+与自营 C 端在**同一个库**里，换个渠道号就能读到别家的目录与报价，那是跨渠道的数据泄露。
+所以运营台的每个端点都要过 `b2b_operator` 的会话闸门。
+
+### 33.5 写侧多了一件那些包不做的事
+
+`internal/order` / `internal/fulfillment` / `internal/refund` / `internal/reassign`
+只按 id 定位记录，**不带权限判断** —— 它们是库函数的薄封装，
+故意把权限判断留给调用方（那是调用方的责任，不是库函数的责任）。
+
+**运营台就是那个调用方。** 所以每个写端点都要先确认「这个资源属于哪个渠道」，
+确认不了就拒绝。少了这一步，运营台一个 id 就能改到别的渠道的单。
+
+这是运营台**唯一**比那些包多做的一件事 —— 它多的是校验，不是业务规则。
+
+### 33.6 金额一律 NUMERIC，视图里 ::text 出
+
+Go 标准库没有十进制类型，浮点会丢分。所以视图里每个金额列都 `::text`，
+API 里以字符串出，前端不许自己解析成 float 再算。
+
+`commission_rate` / `tax_policy` / `price_policy` 这些 jsonb 同理 —— `::text` 出，
+调用方自己解释。
+
+### 33.7 凭证管理在 CLI 里
+
+`tc-connect operator list|create|disable|enable|rotate`。
+**网页上不做凭证管理**：网页上改凭证 = 谁能进网页谁能改凭证，那就等于没有分级。
+

@@ -1,0 +1,29 @@
+{{define "login"}}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运营台登录 · ticket-center</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login" method="post" action="/login">
+    <h1><span class="dot off"></span>运营台登录</h1>
+    <p>内部运营台。票到我们这里就自营，这里看的是全渠道的目录、订单与履约。</p>
+    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    <label for="code">操作员 code</label>
+    <input id="code" name="code" autocomplete="username" autofocus required>
+    <label for="secret">凭证</label>
+    <input id="secret" name="secret" type="password" autocomplete="current-password" required>
+    <button type="submit">登录</button>
+    <div class="note">
+      凭证由 <span class="mono">tc-connect operator create</span> 创建，创建时显示一次。
+      角色分三档：admin 能放行退款与改派，operator 能下单与发起退款，viewer 只读。
+    </div>
+  </form>
+</div>
+</body>
+</html>
+{{end}}

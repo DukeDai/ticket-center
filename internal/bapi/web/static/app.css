@@ -1,0 +1,145 @@
+:root {
+  --bg: #0b1020; --bg2: #121a2e; --card: #161f36; --card2: #1b2540;
+  --line: #26324f; --line2: #33415f;
+  --fg: #dbe4f5; --fg2: #93a3c4; --fg3: #63739a;
+  --accent: #5aa2ff; --accent2: #7c5cff;
+  --ok: #3fd08a; --warn: #f0b429; --bad: #ff6b6b;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: radial-gradient(1200px 700px at 12% -8%, #1b2a4d 0%, transparent 60%), var(--bg);
+  color: var(--fg);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft Yahei", Segoe UI, sans-serif;
+  padding: 24px 28px 60px;
+  max-width: 1560px;
+  margin: 0 auto;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+header {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap;
+  padding-bottom: 16px; border-bottom: 1px solid var(--line); margin-bottom: 20px;
+}
+
+h1 { font-size: 21px; font-weight: 650; letter-spacing: .2px; margin: 0; }
+h1 .dot {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--ok); margin-right: 10px; box-shadow: 0 0 12px var(--ok); vertical-align: middle;
+}
+h1 .dot.off { background: var(--bad); box-shadow: 0 0 12px var(--bad); }
+
+.sub { color: var(--fg2); font-size: 13px; margin-top: 6px; }
+.who { color: var(--fg2); font-size: 13px; display: flex; align-items: center; gap: 12px; }
+.who b { color: var(--fg); font-weight: 600; }
+.role {
+  font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 5px;
+  border: 1px solid var(--line2); color: var(--fg2); background: var(--card);
+}
+.role.admin { color: var(--ok); border-color: rgba(63, 208, 138, .4); }
+.role.operator { color: var(--accent); border-color: rgba(90, 162, 255, .4); }
+
+.tabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.tab {
+  background: var(--card); border: 1px solid var(--line); color: var(--fg2);
+  padding: 7px 15px; border-radius: 9px; cursor: pointer; font-size: 13px; transition: .15s;
+}
+.tab:hover { border-color: var(--line2); color: var(--fg); text-decoration: none; }
+.tab.on {
+  background: var(--card2); border-color: var(--accent); color: var(--fg);
+  box-shadow: 0 0 0 1px rgba(90, 162, 255, .15);
+}
+.tab .n { font-family: var(--mono); color: var(--fg3); margin-left: 6px; font-size: 12px; }
+
+.stats { display: flex; gap: 9px; flex-wrap: wrap; margin-bottom: 16px; }
+.stat {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 9px 15px; min-width: 96px;
+}
+.stat b { display: block; font-size: 19px; font-family: var(--mono); letter-spacing: -.4px; }
+.stat span { font-size: 11px; color: var(--fg3); }
+.stat.ok b { color: var(--ok); }
+.stat.bad b { color: var(--bad); }
+.stat.warn b { color: var(--warn); }
+
+.filters {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px;
+}
+.filters input, .filters select {
+  background: var(--card); border: 1px solid var(--line); color: var(--fg);
+  padding: 6px 10px; border-radius: 8px; font-size: 13px; font-family: inherit;
+}
+.filters input:focus, .filters select:focus { outline: none; border-color: var(--accent); }
+.filters input::placeholder { color: var(--fg3); }
+.filters label { color: var(--fg3); font-size: 12px; }
+
+table {
+  width: 100%; border-collapse: collapse; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+}
+th, td { padding: 8px 11px; text-align: left; border-bottom: 1px solid var(--line); font-size: 13px; }
+th {
+  background: var(--card2); color: var(--fg2); font-weight: 600; font-size: 12px;
+  position: sticky; top: 0; white-space: nowrap;
+}
+tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: rgba(90, 162, 255, .05); }
+td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px;
+  border: 1px solid var(--line2); color: var(--fg2); font-family: var(--mono); white-space: nowrap;
+}
+.pill.ok { color: var(--ok); border-color: rgba(63, 208, 138, .35); }
+.pill.bad { color: var(--bad); border-color: rgba(255, 107, 107, .35); }
+.pill.warn { color: var(--warn); border-color: rgba(240, 180, 41, .35); }
+.pill.info { color: var(--accent); border-color: rgba(90, 162, 255, .35); }
+
+.empty {
+  background: var(--card); border: 1px dashed var(--line2); border-radius: 10px;
+  padding: 34px; text-align: center; color: var(--fg3);
+}
+
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 14px;
+}
+.card h2 { font-size: 14px; margin: 0 0 10px; color: var(--fg); font-weight: 600; }
+.card h2 .n { font-family: var(--mono); color: var(--fg3); margin-left: 6px; font-size: 12px; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
+
+.hint { color: var(--fg3); font-size: 12px; margin-top: 8px; }
+.err {
+  background: rgba(255, 107, 107, .08); border: 1px solid rgba(255, 107, 107, .35);
+  color: #ffb3b3; border-radius: 8px; padding: 9px 13px; margin-bottom: 14px; font-size: 13px;
+}
+
+/* 登录页 */
+.login-wrap {
+  display: flex; justify-content: center; align-items: center; min-height: 78vh;
+}
+.login {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 28px 30px; width: 380px;
+}
+.login h1 { margin-bottom: 6px; }
+.login p { color: var(--fg2); font-size: 13px; margin: 0 0 20px; }
+.login label { display: block; color: var(--fg3); font-size: 12px; margin-bottom: 5px; }
+.login input {
+  width: 100%; background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
+  padding: 9px 12px; border-radius: 8px; font-size: 14px; margin-bottom: 14px;
+  font-family: inherit;
+}
+.login input:focus { outline: none; border-color: var(--accent); }
+.login button {
+  width: 100%; background: var(--accent); color: #04101f; border: none; padding: 10px;
+  border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+}
+.login button:hover { background: #74b2ff; }
+.login .note { color: var(--fg3); font-size: 12px; margin-top: 14px; line-height: 1.5; }

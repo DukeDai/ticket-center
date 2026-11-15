@@ -3014,6 +3014,28 @@ BEGIN
 END $$;
 
 
+-- -------------------------------------------------------------------------------------
+-- 运营台操作员（种子）
+-- -------------------------------------------------------------------------------------
+--
+-- 这里建**三个**角色各一个，让运营台的权限分层在种子里就能看到：
+-- admin 能放行退款与改派，operator 能下单与发起退款，viewer 只读。
+--
+-- 凭证是种子专用的固定值（不是随机生成的）：种子要可复现，
+-- 同一个种子两次跑出来的库必须一模一样。真实环境用
+-- `tc-connect operator create --code … --role …` 建号，那里的凭证是随机的。
+--
+-- 明文是 `seed-<role>-secret`。**这不是一个密码**——
+-- 它是种子里的公开常量，任何人拿到这个仓库都能登录种子库。
+-- 所以这条只对本地种子库有意义；真环境的操作员一个都没有，
+-- 要用 CLI 建号（凭证随机、只显示一次）。
+INSERT INTO b2b_operator (code, name, key_hash, role, status, session_salt) OVERRIDING SYSTEM VALUE
+VALUES
+ ('seed_admin',    '种子管理员', encode(digest('seed-admin-secret',    'sha256'), 'hex'), 'admin',    'active', 'seed-salt-admin'),
+ ('seed_operator', '种子运营',   encode(digest('seed-operator-secret', 'sha256'), 'hex'), 'operator', 'active', 'seed-salt-operator'),
+ ('seed_viewer',   '种子只读',   encode(digest('seed-viewer-secret',   'sha256'), 'hex'), 'viewer',   'active', 'seed-salt-viewer');
+
+
 COMMIT;
 
 -- 统计
@@ -3046,4 +3068,5 @@ UNION ALL SELECT 'supplier_variants',count(*) FROM supplier_variant
 UNION ALL SELECT 'variant_mappings', count(*) FROM supplier_variant_mapping
 UNION ALL SELECT 'c_variant_cal',    count(*) FROM c_variant_calendar
 UNION ALL SELECT 'locked_prices',    count(*) FROM price_calendar WHERE price_locked
-UNION ALL SELECT 'per_group_items',  count(*) FROM sales_order_item WHERE pricing_basis='per_group';
+UNION ALL SELECT 'per_group_items',  count(*) FROM sales_order_item WHERE pricing_basis='per_group'
+UNION ALL SELECT 'ops_operators',   count(*) FROM b2b_operator;
