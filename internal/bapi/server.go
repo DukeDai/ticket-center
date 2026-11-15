@@ -532,6 +532,21 @@ func pathID(r *http.Request, name string) (int64, error) {
 	return id, nil
 }
 
+// queryID 取查询参数里的正整数 id；没传或不是正整数都报错。
+//
+// 网页端的详情页用查询参数带 id（`?tab=order_detail&order_id=8`），
+// API 端用路径参数（`/api/v1/orders/{order_id}`）—— 两处不能混用同一个读法：
+// `pathID` 读的是路径里的值，拿它去读查询参数会读成空串，
+// 于是详情页永远报「order_id 必须是正整数，收到 ""」。
+func queryID(r *http.Request, name string) (int64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("%s 必须是正整数，收到 %q", name, raw)
+	}
+	return id, nil
+}
+
 // optInt64 取可选的正整数查询参数；没传或传 0 返回 0。
 //
 // 0 的含义是「不过滤」而不是「id 为 0」—— 后者在库里不存在，

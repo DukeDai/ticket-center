@@ -292,7 +292,7 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 			data.Error = err.Error()
 		}
 	case "order_detail":
-		id, err := pathID(r, "order_id")
+		id, err := queryID(r, "order_id")
 		if err != nil {
 			data.Error = err.Error()
 		} else {

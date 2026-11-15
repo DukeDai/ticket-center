@@ -35,6 +35,12 @@ func TestConsolePagesRender(t *testing.T) {
 }
 
 // TestConsoleOrderDetailRenders 是「订单详情页能渲染」。
+//
+// 这一条曾经是绿的而页面是坏的：详情页把 id 读成了路径参数
+// （`r.PathValue`），而网页端传的是查询参数 —— 于是读成空串，
+// 页面显示「order_id 必须是正整数，收到 ""」，而 HTTP 状态是 200。
+// 所以这里断言的不只是「渲染失败」不在页面里，还要断言
+// 「页面里的报错」不在页面里 —— 错误页也是 200，只看状态码看不出来。
 func TestConsoleOrderDetailRenders(t *testing.T) {
 	rig := newRig(t)
 	c := rig.login(t, "ops_admin", rig.admin)
@@ -59,8 +65,21 @@ func TestConsoleOrderDetailRenders(t *testing.T) {
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("订单详情页返回 %d：%s", rec2.Code, rec2.Body.String())
 	}
-	if strings.Contains(rec2.Body.String(), "渲染失败") {
+	body := rec2.Body.String()
+	if strings.Contains(body, "渲染失败") {
 		t.Errorf("订单详情页渲染失败")
+	}
+	// 页面自己报出来的问题也算坏 —— 错误页的 HTTP 状态同样是 200。
+	for _, bad := range []string{"必须是正整数", "没有找到这一单"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("订单详情页报了错（%q）：%s", bad, body)
+		}
+	}
+	// 详情页要有真东西：明细、预订、券、支付四块。
+	for _, want := range []string{"明细", "预订", "券", "支付"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("订单详情页里没有 %q 这一块", want)
+		}
 	}
 }
 
