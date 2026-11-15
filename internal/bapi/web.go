@@ -2,6 +2,7 @@ package bapi
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -36,7 +37,30 @@ func webFuncs() template.FuncMap {
 		"supplierPill":    statusPill,
 		"shortTime":       shortTime,
 		"statusClass":     statusPill,
+		"evidenceSignals": evidenceSignals,
 	}
+}
+
+// evidenceSignals 把匹配依据里的信号列出来。
+//
+// 依据存的是 jsonb（`{"signals": [...], "decided_by": "..."}`）。
+// 整段 JSON 摊在表格里没人看 —— 运营要扫的是「凭什么说它匹配」，
+// 所以把 signals 拼成一行，判定人单独一列。
+//
+// **这是展示层，不改口径。** 拼不出来就原样返回那段 JSON：
+// 依据的形状是机器写进来的，运营台不替它猜结构。
+func evidenceSignals(evidence string) string {
+	evidence = strings.TrimSpace(evidence)
+	if evidence == "" {
+		return "—"
+	}
+	var doc struct {
+		Signals []string `json:"signals"`
+	}
+	if err := json.Unmarshal([]byte(evidence), &doc); err != nil || len(doc.Signals) == 0 {
+		return evidence
+	}
+	return strings.Join(doc.Signals, " · ")
 }
 
 // statusPill 把状态词映射到徽标样式。
@@ -48,12 +72,14 @@ func statusPill(status string) string {
 	switch status {
 	case "paid", "succeeded", "issued", "used", "confirmed", "ticketed", "online", "active", "completed":
 		return "ok"
-	case "failed", "cancelled", "void", "expired", "refunded", "discontinued", "inactive":
+	case "failed", "cancelled", "void", "expired", "refunded", "discontinued", "inactive", "sold_out":
 		return "bad"
-	case "pending", "requested", "processing", "draft", "reserved", "partial_refund":
+	case "pending", "requested", "processing", "draft", "reserved", "partial_refund",
+		"pending_review", "unpaid", "awaiting_payment", "refunding", "partially_cancelled":
 		return "warn"
-	case "unpaid", "awaiting_payment", "refunding", "partially_cancelled":
-		return "warn"
+	case "offline":
+		// 下架不是故障 —— 灰色的空徽标，比红色更贴近事实。
+		return ""
 	default:
 		return ""
 	}
@@ -136,6 +162,8 @@ type consoleData struct {
 	Overview  overviewData
 	Orders    []OrderRow
 	OrderDetail *OrderDetail
+	Catalog   []CatalogRow
+	ProductDetail *ProductDetail
 	Gaps      []FulfillmentGapRow
 	SupplyForms []SupplyFormRow
 	Refunds   []RefundRow
@@ -178,6 +206,9 @@ type filterState struct {
 	RefundStatuses  []string
 	SupplyDate      string
 	SupplyGapsOnly  bool
+	CatalogKeyword  string
+	ListingStatus   string
+	ListingStatuses []string
 }
 
 // webHandlers 是页面渲染这一层。
@@ -276,9 +307,12 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 			RefundStatus: strings.TrimSpace(q.Get("refund_status")),
 			SupplyDate:   strings.TrimSpace(q.Get("date")),
 			SupplyGapsOnly: strings.EqualFold(strings.TrimSpace(q.Get("gaps_only")), "true"),
+			CatalogKeyword: strings.TrimSpace(q.Get("q")),
+			ListingStatus:  strings.TrimSpace(q.Get("listing_status")),
 			OrderStatuses:   []string{"pending", "confirmed", "partially_refunded", "refunded", "cancelled"},
 			PaymentStatuses: []string{"unpaid", "paid", "partially_refunded", "refunded"},
 			RefundStatuses:  []string{"requested", "approved", "completed", "failed", "rejected"},
+			ListingStatuses: []string{"online", "draft", "offline", "sold_out", "expired"},
 		},
 	}
 
@@ -290,6 +324,22 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	case "orders":
 		if err := s.loadOrders(&data); err != nil {
 			data.Error = err.Error()
+		}
+	case "catalog":
+		if err := s.loadCatalog(&data); err != nil {
+			data.Error = err.Error()
+		}
+	case "product_detail":
+		id, err := queryID(r, "product_id")
+		if err != nil {
+			data.Error = err.Error()
+		} else {
+			d, err := ProductDetailByID(s.db, id)
+			if err != nil {
+				data.Error = err.Error()
+			} else {
+				data.ProductDetail = d
+			}
 		}
 	case "order_detail":
 		id, err := queryID(r, "order_id")
@@ -409,10 +459,24 @@ func (s *Server) loadOrders(data *consoleData) error {
 	return nil
 }
 
+// loadCatalog 填商品目录。
+//
+// 目录是「商品 × 渠道」一行 —— 同一个商品在两个渠道上架就有两行，
+// 这是**口径**（运营要看每个渠道各自挂了什么），不是重复。
+func (s *Server) loadCatalog(data *consoleData) error {
+	rows, err := Catalog(s.db, 0, data.Filter.CatalogKeyword, data.Filter.ListingStatus)
+	if err != nil {
+		return fmt.Errorf("读商品目录失败：%w", err)
+	}
+	data.Catalog = rows
+	return nil
+}
+
 // buildTabs 造页签（带条数）。
 func (s *Server) buildTabs(data *consoleData) []tabDef {
 	return []tabDef{
 		{Key: "overview", Label: "总览"},
+		{Key: "catalog", Label: "商品", Count: len(data.Catalog)},
 		{Key: "orders", Label: "订单", Count: len(data.Orders)},
 		{Key: "gaps", Label: "履约缺口"},
 		{Key: "supply", Label: "供给形态", Count: len(data.SupplyForms)},

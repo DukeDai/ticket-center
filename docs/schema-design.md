@@ -311,6 +311,12 @@ Go 标准库没有十进制类型，Python 的 `float()` 算钱迟早差一分�
 | `v_ops_supplier_health` | 哪个源在掉链子？（口径取自 `v_supplier_sync_health`） |
 | `v_ops_settlement_gap` | 已确认预订但没进结算单（口径取自 `v_settlement_gap`） |
 | `v_ops_reassign_candidates` | 哪些明细跟当前的世界对不上了、该改派（口径取自 `v_reassign_candidates`） |
+| `v_ops_product_head` | 商品头：一行一个商品，带分类、城市与家底计数（**与目录视图的「商品 × 渠道」区分开** —— 还没上架任何渠道的商品在目录视图里一行都没有） |
+| `v_ops_product_source` | 商品的源绑定与**判定依据**（匹配方式 / 置信度 / 依据 / 审核状态 / 判定人）—— 人工判过的映射不许被下一次同步洗掉 |
+| `v_ops_product_variant` | 可售单元与轴取值（人群 · 票种 · 园区范围）、轴选项上**声明**的有效天数、成分数、源绑定数、售价行数 |
+| `v_ops_product_listing` | 商品在各渠道的上架配置（状态、四类策略、起订与限购、绑了几个源） |
+| `v_ops_product_price` | 一条**对外报价**（售价 / 标价 / 折扣 / 源侧成本、币种、汇率因子与快照日期、锁价、来源）—— 不是成交价，成交价在订单明细快照里 |
+| `v_ops_product_content` | 一条展示文案（亮点 / 包含项 / 须知），**每行带 locale**（硬约束 9） |
 
 ### 4.12 C 端域（20，见 `docs/c-end-model.md`）
 
@@ -2316,4 +2322,54 @@ API 里以字符串出，前端不许自己解析成 float 再算。
 
 `tc-connect operator list|create|disable|enable|rotate`。
 **网页上不做凭证管理**：网页上改凭证 = 谁能进网页谁能改凭证，那就等于没有分级。
+
+### 33.8 商品详情：六张读模型与三条不重算的边界
+
+运营台的目录视图（`v_ops_product_catalog`）只到「商品 × 渠道」这一层。
+它够回答运营的日常问题（哪个渠道挂着这个商品、挂的是什么状态），
+但**不够回答商品的问题**：绑了哪些源、判定依据是什么、有哪些可售单元、
+每个变体挂在哪些渠道、价格怎么配、文案写了什么。
+
+所以有六张 `v_ops_product_*`（`db/migrations/036_ops_product_detail.sql`）。
+它们与订单详情是**同一类例外**：列表走读模型，详情才展开 ——
+但展开的也是读模型，不在请求链路里 join 主数据。
+
+#### 商品头单开一张视图，不拿目录视图凑
+
+| 视图 | 一行是什么 | 关键列 |
+|---|---|---|
+| `v_ops_product_head` | 一个商品 | 分类、城市、`variant_count` / `mapping_count` / `price_row_count` / `channel_count` |
+| `v_ops_product_source` | 一个源绑定 | `match_type` / `confidence` / `match_evidence` / `mapping_status` / `created_by` |
+| `v_ops_product_variant` | 一个可售单元 | `axis_values`（拼好的一行）、`axis_valid_days`（**声明**）、成分数、源绑定数、售价行数 |
+| `v_ops_product_listing` | 一个「商品 × 渠道」 | `listing_status`、四类策略 `::text`、起订与限购、源数 |
+| `v_ops_product_price` | 一条对外报价 | 售价 / 标价 / 折扣 / 源侧成本、币种、`fx_rate` + `fx_as_of`、`price_locked`、`source` |
+| `v_ops_product_content` | 一条展示文案 | `content_kind`、`locale`、`kind`、`title`、`content` |
+
+目录视图是「商品 × 渠道」一行，所以拿它当商品头有两个具体的坑：
+
+- 同一商品在两个渠道上架就有两行，头该取哪一行是猜的 ——
+  猜出来的头会跟另一个渠道的页面对不上。
+- 还没上架任何渠道的商品在目录视图里**一行都没有** ——
+  于是「刚同步进来、还没上架」的商品详情页打不开。
+  而那恰恰是运营最需要看的商品：它刚到，什么都还没配。
+
+#### 三条不重算的边界
+
+- **售价行是「对外报的价」，不是成交价。** 售价行（`price_calendar`）是**声明**；
+  成交价是下单那一刻定价函数算出来的、记在订单明细快照里的事实。
+  两者不一致是正常的（期间成本变了）。详情页把两者分开摆，
+  运营才不会拿一个去对另一个的账。成本那一列带的是**源侧成本**（`cost_price`），
+  带 `source` 标记它是哪儿来的。
+- **有效期只带「声明」不重算。** 详情页带的是轴选项上**声明**的天数，
+  供运营核对声明与实际券是否一致；有效期的唯一读法仍然是 `fn_variant_validity_days`。
+- **组合没有单一源币种，所以 `fx_rate` 与 `fx_as_of` 都空。**
+  空是「这里没有单一的值」，不是「同币种、汇率 1」——
+  这两种空在语义上完全不同（硬约束 16 / 27）。
+
+**判定依据必须带出来。** 人工判过的映射最怕的是机器下一次同步把依据洗掉
+（写路径门禁 `internal/writelint` 守的就是这一条）。
+运营看不到依据，就只能凭感觉点「通过」—— 那道门禁就白设了。
+
+**文案每行带 locale。** 亮点、包含项、须知 各在自己的行级表里，
+详情页只是把三张表并起来看（硬约束 9）。
 

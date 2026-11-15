@@ -43,6 +43,220 @@
   </table>
 </div>
 
+{{else if eq .Tab "catalog"}}
+
+<div class="card">
+  <h2>商品目录<span class="n">{{len .Catalog}}</span></h2>
+  <p class="hint">
+    一行一个「商品 × 渠道」—— 同一个商品在两个渠道上架就有两行，
+    这是口径（要看每个渠道各自挂了什么），不是重复。点商品编码进详情。
+  </p>
+  <form class="filters" method="get" action="/console">
+    <input type="hidden" name="tab" value="catalog">
+    <input type="text" name="q" placeholder="商品编码或名称" value="{{.Filter.CatalogKeyword}}">
+    <select name="listing_status">
+      <option value="">全部上架状态</option>
+      {{range .Filter.ListingStatuses}}<option value="{{.}}" {{if eq . $.Filter.ListingStatus}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+    <button class="tab" type="submit">筛选</button>
+  </form>
+  <table>
+    <thead>
+      <tr><th>商品编码</th><th>名称</th><th>渠道</th><th>类型</th><th>上架状态</th>
+          <th class="num">变体</th><th class="num">源</th><th>币种</th>
+          <th class="num">起订</th><th class="num">限购</th><th>发布时间</th></tr>
+    </thead>
+    <tbody>
+      {{range .Catalog}}
+      <tr>
+        <td class="mono"><a href="/console?tab=product_detail&product_id={{.ProductID}}">{{.ProductCode}}</a></td>
+        <td>{{.ProductTitle}}</td>
+        <td><span class="pill">{{.ChannelCode}}</span></td>
+        <td>{{.ChannelType}}</td>
+        <td><span class="pill {{statusPill .ListingStatus}}">{{.ListingStatus}}</span></td>
+        <td class="num">{{.VariantCount}}</td>
+        <td class="num">{{.SourceCount}}</td>
+        <td class="mono">{{.DefaultCurrency}}</td>
+        <td class="num">{{.MinOrderQty}}</td>
+        <td class="num">{{if .MaxOrderQty}}{{.MaxOrderQty}}{{else}}—{{end}}</td>
+        <td class="mono">{{shortTime .PublishedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="11" style="color:var(--fg3);text-align:center;padding:26px">没有符合条件的商品</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Tab "product_detail"}}
+
+{{with .ProductDetail}}
+<div class="card">
+  <h2>{{.ProductTitle}} <span class="pill {{statusPill .ProductStatus}}">{{.ProductStatus}}</span></h2>
+  <p class="hint">
+    <span class="mono">{{.ProductCode}}</span>
+    {{if .Subtitle}} · {{.Subtitle}}{{end}}
+    {{if .CategoryName}} · {{.CategoryName}}{{end}}
+    {{if .CityName}} · {{.CityName}}{{end}}
+  </p>
+  <div class="stats">
+    <div class="stat"><b>{{.VariantCount}}</b><span>可售单元</span></div>
+    <div class="stat"><b>{{.MappingCount}}</b><span>源绑定</span></div>
+    <div class="stat"><b>{{.PriceRowCount}}</b><span>售价行</span></div>
+    <div class="stat"><b>{{.ChannelCount}}</b><span>上架渠道</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>源绑定<span class="n">{{len .Sources}}</span></h2>
+  <p class="hint">
+    判定依据（匹配方式 / 置信度 / 依据）带出来 —— 人工判过的映射不能被下一次同步洗掉，
+    运营看不到依据就只能凭感觉点「通过」。
+  </p>
+  <table>
+    <thead>
+      <tr><th>源</th><th>源条目</th><th>源状态</th><th>匹配方式</th><th>置信度</th>
+          <th>判定依据</th><th>主映射</th><th>映射状态</th><th>建映射人</th><th>最近同步</th></tr>
+    </thead>
+    <tbody>
+      {{range .Sources}}
+      <tr>
+        <td><b>{{.SupplierName}}</b> <span class="mono">{{.SupplierCode}}</span></td>
+        <td class="mono">{{.ExternalCode}}</td>
+        <td><span class="pill {{statusPill .SupplierProdStatus}}">{{.SupplierProdStatus}}</span></td>
+        <td>{{.MatchType}}</td>
+        <td class="num">{{.Confidence}}</td>
+        <td style="font-size:12px;color:var(--fg2)" title="{{.MatchEvidence}}">{{evidenceSignals .MatchEvidence}}</td>
+        <td>{{if .IsPrimary}}<span class="pill ok">主</span>{{else}}—{{end}}</td>
+        <td><span class="pill {{statusPill .MappingStatus}}">{{.MappingStatus}}</span></td>
+        <td class="mono">{{.CreatedBy}}</td>
+        <td class="mono">{{shortTime .LastSyncedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="10" style="color:var(--fg3);text-align:center;padding:20px">没有源绑定</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>可售单元<span class="n">{{len .Variants}}</span></h2>
+  <p class="hint">
+    轴取值（人群 / 票种 / 园区范围）由库拼好。有效天数是轴选项上<b>声明</b>的，
+    有效期的唯一读法是 <span class="mono">fn_variant_validity_days</span>，这里只是带出来核对。
+  </p>
+  <table>
+    <thead>
+      <tr><th>变体编码</th><th>名称</th><th>角色</th><th>票种</th><th>轴取值</th>
+          <th class="num">声明天数</th><th class="num">成分</th><th class="num">源绑定</th>
+          <th class="num">售价行</th><th>状态</th></tr>
+    </thead>
+    <tbody>
+      {{range .Variants}}
+      <tr>
+        <td class="mono">{{.VariantCode}}</td>
+        <td>{{.VariantTitle}}</td>
+        <td><span class="pill info">{{.VariantRole}}</span></td>
+        <td>{{.TicketTypeName}}</td>
+        <td class="mono" style="font-size:12px">{{if .AxisValues}}{{.AxisValues}}{{else}}—{{end}}</td>
+        <td class="num">{{if .AxisValidDays}}{{.AxisValidDays}}{{else}}—{{end}}</td>
+        <td class="num">{{.ComponentCount}}</td>
+        <td class="num">{{.SupplierMappingCount}}</td>
+        <td class="num">{{.PriceRowCount}}</td>
+        <td><span class="pill {{statusPill .VariantStatus}}">{{.VariantStatus}}</span></td>
+      </tr>
+      {{else}}
+      <tr><td colspan="10" style="color:var(--fg3);text-align:center;padding:20px">没有可售单元</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>上架配置<span class="n">{{len .Listings}}</span></h2>
+    <table>
+      <thead><tr><th>渠道</th><th>类型</th><th>状态</th><th>币种</th><th class="num">起订</th><th class="num">限购</th><th class="num">源</th></tr></thead>
+      <tbody>
+        {{range .Listings}}
+        <tr>
+          <td><b>{{.ChannelName}}</b> <span class="mono">{{.ChannelCode}}</span></td>
+          <td>{{.ChannelType}}</td>
+          <td><span class="pill {{statusPill .ListingStatus}}">{{.ListingStatus}}</span></td>
+          <td class="mono">{{.DefaultCurrency}}</td>
+          <td class="num">{{.MinOrderQty}}</td>
+          <td class="num">{{if .MaxOrderQty}}{{.MaxOrderQty}}{{else}}—{{end}}</td>
+          <td class="num">{{.SourceCount}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="7" style="color:var(--fg3);text-align:center;padding:20px">还没有上架</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>展示文案<span class="n">{{len .Contents}}</span></h2>
+    <p class="hint">文案一律带 locale（硬约束 9）。</p>
+    <table>
+      <thead><tr><th>种类</th><th>locale</th><th>分类</th><th>标题</th><th>文案</th></tr></thead>
+      <tbody>
+        {{range .Contents}}
+        <tr>
+          <td><span class="pill">{{.ContentKind}}</span></td>
+          <td class="mono">{{.Locale}}</td>
+          <td>{{if .Kind}}{{.Kind}}{{else}}—{{end}}</td>
+          <td>{{if .Title}}{{.Title}}{{else}}—{{end}}</td>
+          <td style="font-size:12px">{{.Content}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" style="color:var(--fg3);text-align:center;padding:20px">没有文案</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>售价行<span class="n">{{len .Prices}}</span></h2>
+  <p class="hint">
+    这是<b>对外报的价</b>，不是成交价 —— 成交价在订单明细的快照里（历史不可变）。
+    折算因子与快照日期一起带出：同币种因子 1、快照日期为空（没折算过就不留汇率快照）；
+    组合没有单一源币种，两列都空 —— 那是「这里没有单一的值」，不是「同币种、汇率 1」。
+  </p>
+  <table>
+    <thead>
+      <tr><th>日期</th><th>变体</th><th>渠道</th><th class="num">售价</th><th class="num">标价</th>
+          <th class="num">折扣 %</th><th class="num">成本</th><th>币种</th>
+          <th class="num">汇率</th><th>快照日期</th><th>锁价</th><th>来源</th><th>状态</th></tr>
+    </thead>
+    <tbody>
+      {{range .Prices}}
+      <tr>
+        <td class="mono">{{.PriceDate}}</td>
+        <td class="mono">{{.VariantCode}}</td>
+        <td class="mono">{{if .ChannelCode}}{{.ChannelCode}}{{else}}—{{end}}</td>
+        <td class="num">{{.SellPrice}}</td>
+        <td class="num">{{if .ListPrice}}{{.ListPrice}}{{else}}—{{end}}</td>
+        <td class="num">{{if .DiscountPct}}{{.DiscountPct}}{{else}}—{{end}}</td>
+        <td class="num">{{if .CostPrice}}{{.CostPrice}}{{else}}—{{end}}</td>
+        <td class="mono">{{if .Currency}}{{.Currency}}{{else}}—{{end}}</td>
+        <td class="num">{{if .FXRate}}{{.FXRate}}{{else}}—{{end}}</td>
+        <td class="mono">{{if .FXAsOf}}{{.FXAsOf}}{{else}}—{{end}}</td>
+        <td>{{if .PriceLocked}}<span class="pill warn">锁价</span>{{else}}—{{end}}</td>
+        <td class="mono">{{if .Source}}{{.Source}}{{else}}—{{end}}</td>
+        <td><span class="pill {{statusPill .Status}}">{{.Status}}</span></td>
+      </tr>
+      {{else}}
+      <tr><td colspan="13" style="color:var(--fg3);text-align:center;padding:20px">没有售价行</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<div class="empty">没有找到这个商品。<a href="/console?tab=catalog">回到商品目录</a></div>
+{{end}}
+
 {{else if eq .Tab "orders"}}
 
 <div class="card">

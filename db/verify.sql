@@ -188,6 +188,50 @@ SELECT order_no, channel_code, order_item_id, visit_date, quantity,
 FROM v_ops_reassign_candidates
 ORDER BY order_no;
 
+-- D3.12 商品头（一行一个商品，不是「商品 × 渠道」）
+-- 期望：D3.12 每个商品一行；variant_count / mapping_count / price_row_count 对得上下面三张表。
+SELECT product_id, product_code, product_title, product_status,
+       category_name, city_name, variant_count, mapping_count,
+       price_row_count, channel_count
+FROM v_ops_product_head
+ORDER BY product_code;
+
+-- D3.13 商品源绑定与判定依据（映射审核队列）
+-- 期望：D3.13 每行带 match_type / confidence / match_evidence；
+-- pending_review 的行就是等人审的队列。
+SELECT product_code, supplier_code, external_code, supplier_product_status,
+       match_type, confidence, match_evidence, is_primary, mapping_status, created_by
+FROM v_ops_product_source
+ORDER BY product_code, supplier_code;
+
+-- D3.14 可售单元与轴取值
+-- 期望：D3.14 axis_values 是轴取值拼好的一行（人群 · 票种 · 园区范围）。
+SELECT product_code, variant_code, variant_role, ticket_type_name,
+       axis_values, axis_valid_days, component_count,
+       supplier_mapping_count, price_row_count
+FROM v_ops_product_variant
+ORDER BY product_code, variant_code;
+
+-- D3.15 各渠道的上架配置
+SELECT product_code, channel_code, channel_type, default_currency,
+       listing_status, min_order_qty, max_order_qty, source_count,
+       price_policy, stock_policy
+FROM v_ops_product_listing
+ORDER BY product_code, channel_code;
+
+-- D3.16 售价行（对外报价，不是成交价）
+-- 期望：D3.16 组合的 fx_rate 为空（组合没有单一源币种）；同币种的 fx_as_of 为空。
+SELECT product_code, variant_code, price_date, channel_code,
+       sell_price, list_price, cost_price, currency, fx_rate, fx_as_of,
+       price_locked, source, status
+FROM v_ops_product_price
+ORDER BY product_code, variant_code, price_date;
+
+-- D3.17 展示文案（每行带 locale）
+SELECT content_kind, product_code, locale, kind, title, content, sort_order
+FROM v_ops_product_content
+ORDER BY product_code, content_kind, sort_order;
+
 \echo ''
 \echo '════════════════════════ E. 不变量断言（全部应 passed=t） ════════════════════════'
 -- 断言来源：迁移文件里的 v_invariant_checks 视图（条数以视图定义为准，单一事实来源）

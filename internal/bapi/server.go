@@ -73,6 +73,7 @@ func New(db *store.DB, opts Options) *Server {
 	// 读侧：跨渠道运营视图。
 	s.mux.HandleFunc("GET /api/v1/channels", s.handleChannels)
 	s.mux.HandleFunc("GET /api/v1/products", s.handleProducts)
+	s.mux.HandleFunc("GET /api/v1/products/{product_id}", s.handleProductDetail)
 	s.mux.HandleFunc("GET /api/v1/orders", s.handleOrders)
 	s.mux.HandleFunc("GET /api/v1/orders/{order_id}", s.handleOrderDetail)
 	s.mux.HandleFunc("GET /api/v1/fulfillment/gaps", s.handleFulfillmentGaps)
@@ -296,6 +297,28 @@ func (s *Server) handleProducts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"products": rows})
+}
+
+// handleProductDetail 商品详情。
+//
+// 详情是**钻取**：源绑定、可售单元、上架配置、售价、文案五块。
+// 每一块都来自 v_ops_product_* 读模型 —— 运营台不重算事实，
+// 也不在请求链路里 join 主数据（硬约束 10 / 41）。
+func (s *Server) handleProductDetail(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireOperator(w, r); !ok {
+		return
+	}
+	id, err := pathID(r, "product_id")
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	d, err := ProductDetailByID(s.db, id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }
 
 // handleOrders 订单列表。

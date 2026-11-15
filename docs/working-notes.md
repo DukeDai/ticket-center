@@ -49,6 +49,7 @@ db/migrations/026_*.sql        按团报价的单位价口径（fn_unit_amount�
 db/migrations/027_*.sql        预占的默认 TTL 口径（fn_hold_inventory 归一 NULL → 900 秒）—— 默认值住在库里，不住在调用方
 db/migrations/028_*.sql        凭证过期作业（fn_expire_vouchers）—— 券过期了由作业统一改，「交付过」口径补上 expired
 db/migrations/035_*.sql        B 端运营台：操作员身份（b2b_operator）+ 运营读模型（v_ops_*）—— 内部视角，跨渠道读
+db/migrations/036_*.sql        运营台商品详情：六张 v_ops_product_* 读模型 —— 看得见一个商品内部长什么样
 db/seed.sql                   种子数据（各表行数见 `make counts` 的「种子行数」段；售价金额由定价函数生成）
 db/verify.sql                 验收查询（业务视图查询 + 不变量断言，条数见 make counts）
 cmd/tc-connect/               CLI：sources / layers / mock / normalize / compose / price / migrate / refresh / jobs / order / fulfill / refund / redeem / stock / hold / variant（order 另有 reassign / stale）
